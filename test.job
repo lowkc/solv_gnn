@@ -1,0 +1,18 @@
+#!/bin/bash -l
+#SBATCH --time=00:10:00
+#SBATCH --gres=gpu:1
+#SBATCH --mem=32G
+#SBATCH --account=sn29
+#SBATCH --partition=m3g
+#SBATCH --ntasks=1
+#SBATCH --output=%x.out
+
+module load cuda/11.0
+module load anaconda/2019.03-Python3.7-gcc5
+export PROJECT=sn29
+export CONDA_ENVS=/projects/$PROJECT/$USER/conda_envs
+source activate $CONDA_ENVS/bondnet
+
+export NUM_GPU=1
+
+/projects/sn29/klow12/conda_envs/bondnet/bin/python train_gpu.py --dataset_file='/scratch/sn29/klow12/solvE/solvationML/data/first400.csv' --gpu=0 
