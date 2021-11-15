@@ -1,4 +1,5 @@
-import sys
+import logging
+import sys, os
 import time
 import warnings
 import torch
@@ -11,6 +12,7 @@ from torch.nn import MSELoss
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.serialization import save
 from gnn.model.metric import WeightedL1Loss, EarlyStopping
 from gnn.model.gated_solv_network import GatedGCNSolvationNetwork
 from gnn.data.dataset import SolvationDataset, train_validation_test_split
@@ -37,6 +39,9 @@ def parse_args():
 
     # input files
     parser.add_argument('--dataset_file', type=str, default=None)
+
+    # where to save log files
+    parser.add_argument('--save-dir', type=str, default=None)
 
     # embedding layer
     parser.add_argument("--embedding-size", type=int, default=24)
@@ -242,6 +247,9 @@ def main_worker(gpu, world_size, args):
     if not args.distributed or (args.distributed and args.gpu == 0):
         print("\n\nStart training at: ", datetime.now())
 
+    if args.save_dir is None:
+        args.save_dir = os.getcwd()
+
     if args.distributed:
         dist.init_process_group(
             args.dist_backend,
@@ -286,7 +294,7 @@ def main_worker(gpu, world_size, args):
     )
 
     if not args.distributed or (args.distributed and args.gpu == 0):
-        torch.save(dataset.state_dict(), args.dataset_state_dict_filename)
+        torch.save(dataset.state_dict(), os.path.join(args.save_dir, args.dataset_state_dict_filename))
         print(
             "Trainset size: {}, valset size: {}: testset size: {}.".format(
                 len(trainset), len(valset), len(testset)
@@ -322,7 +330,7 @@ def main_worker(gpu, world_size, args):
 
     # save args
     if not args.distributed or (args.distributed and args.gpu == 0):
-        yaml_dump(args, "train_args.yaml")
+        yaml_dump(args, os.path.join(args.save_dir, "train_args.yaml"))
 
     model = GatedGCNSolvationNetwork(
         in_feats=args.feature_size,
@@ -377,12 +385,12 @@ def main_worker(gpu, world_size, args):
         try:
 
             if args.gpu is None:
-                checkpoint = load_checkpoints(state_dict_objs, filename="checkpoint.pkl")
+                checkpoint = load_checkpoints(state_dict_objs, save_dir=args.save_dir, filename="checkpoint.pkl")
             else:
                 # Map model to be loaded to specified single gpu.
                 loc = "cuda:{}".format(args.gpu)
                 checkpoint = load_checkpoints(
-                    state_dict_objs, map_location=loc, filename="checkpoint.pkl"
+                    state_dict_objs, map_location=loc, save_dir=args.save_dir, filename="checkpoint.pkl"
                 )
 
             args.start_epoch = checkpoint["epoch"]
@@ -421,7 +429,7 @@ def main_worker(gpu, world_size, args):
         val_acc = evaluate(model, feature_names, val_loader, metric, args.gpu)
 
         if stopper.step(val_acc):
-            pickle_dump(best, args.output_file)  # save results for hyperparam tune
+            pickle_dump(best, os.path.join(args.save_dir, args.output_file))  # save results for hyperparam tune
             break
 
         scheduler.step(val_acc)
@@ -440,6 +448,7 @@ def main_worker(gpu, world_size, args):
                 misc_objs,
                 is_best,
                 msg=f"epoch: {epoch}, score {val_acc}",
+                save_dir=args.save_dir
             )
 
             tt = time.time() - ti
@@ -454,12 +463,12 @@ def main_worker(gpu, world_size, args):
 
     # load best to calculate test accuracy
     if args.gpu is None:
-        checkpoint = load_checkpoints(state_dict_objs, filename="best_checkpoint.pkl")
+        checkpoint = load_checkpoints(state_dict_objs, args.save_dir, filename="best_checkpoint.pkl")
     else:
         # Map model to be loaded to specified single  gpu.
         loc = "cuda:{}".format(args.gpu)
         checkpoint = load_checkpoints(
-            state_dict_objs, map_location=loc, filename="best_checkpoint.pkl"
+            state_dict_objs, map_location=loc, save_dir=args.save_dir, filename="best_checkpoint.pkl"
         )
 
     if not args.distributed or (args.distributed and args.gpu == 0):
@@ -472,6 +481,27 @@ def main_worker(gpu, world_size, args):
 def main():
     args = parse_args()
     print(args)
+
+    if args.save_dir is not None:
+        os.makedirs(args.save_dir, exist_ok=True)
+
+    args = parse_args()
+    logging.basicConfig(
+    filename=os.path.join(args.save_dir, '{}.log'.format(
+        datetime.now().strftime("gnn_%Y_%m_%d-%I_%M_%p"))),
+    format="%(asctime)s:%(name)s:%(levelname)s: %(message)s",
+    level=logging.INFO,
+    )
+
+    # logger = logging.getLogger(__name__)
+    # logger.setLevel(logging.INFO)
+    # for handler in logger.handlers:
+    #     logger.removeHandler(handler)
+
+    # fh = logging.FileHandler(os.path.join(args.save_dir, 'gnn.log'))
+    # formatter = logging.Formatter("%(asctime)s:%(name)s:%(levelname)s: %(message)s")
+    # fh.setFormatter(formatter)
+    # logger.addHandler(fh)
 
     if args.distributed:
         # DDP

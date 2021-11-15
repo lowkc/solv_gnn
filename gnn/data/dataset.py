@@ -613,7 +613,6 @@ class SolvationDataset():
             # solvent_mols = [Chem.AddHs(m) for m in supp_1 if m is not None]
             # molecules = zip(solute_mols, solvent_mols)
             # molecules = list(molecules)
-
             logger.info('Removed {} invalid SMILES.'.format(original_len - len(molecules)))
         return molecules
     
@@ -854,6 +853,8 @@ def load_mols_labels(file):
     for z in zipped:
         if z[0] is not None and z[1] is not None:
             molecules.append((Chem.AddHs(z[0]), Chem.AddHs(z[1])))
+
+    if original_len != len(molecules):    
         logger.info('Removed {} invalid SMILES.'.format(original_len - len(molecules)))
 
     return molecules, labels

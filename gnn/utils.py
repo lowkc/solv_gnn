@@ -86,7 +86,7 @@ def seed_torch(seed=35, cudnn_benchmark=False, cudnn_deterministic=False):
 
 
 def save_checkpoints(
-    state_dict_objects, misc_objects, is_best, msg=None, filename="checkpoint.pkl"
+    state_dict_objects, misc_objects, is_best, msg=None, save_dir=None, filename="checkpoint.pkl"
 ):
     """
     Save checkpoints for all objects for later recovery.
@@ -99,22 +99,22 @@ def save_checkpoints(
     objects = copy.copy(misc_objects)
     for k, obj in state_dict_objects.items():
         objects[k] = obj.state_dict()
-    torch.save(objects, filename)
+    torch.save(objects, os.path.join(save_dir, filename))
     if is_best:
-        shutil.copyfile(filename, "best_checkpoint.pkl")
+        shutil.copyfile(os.path.join(save_dir, filename), os.path.join(save_dir, "best_checkpoint.pkl"))
         if msg is not None:
             logger.info(msg)
 
 
 
-def load_checkpoints(state_dict_objects, map_location=None, filename="checkpoint.pkl"):
+def load_checkpoints(state_dict_objects, save_dir=None, map_location=None, filename="checkpoint.pkl"):
     """
     Load checkpoints for all objects for later recovery.
     Args:
         state_dict_objects (dict): A dictionary of objects to save. The object should
             have state_dict() (e.g. model, optimizer, ...)
     """
-    checkpoints = torch.load(str(filename), map_location)
+    checkpoints = torch.load(os.path.join(save_dir,str(filename)), map_location)
     for k, obj in state_dict_objects.items():
         state_dict = checkpoints.pop(k)
         obj.load_state_dict(state_dict)

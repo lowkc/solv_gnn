@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --account=sn29
-#SBATCH --partition=m3g
+#SBATCH --partition=m3h
 #SBATCH --ntasks=1
 #SBATCH --output=%x.out
 
@@ -15,4 +15,4 @@ source activate $CONDA_ENVS/bondnet
 
 export NUM_GPU=1
 
-/projects/sn29/klow12/conda_envs/bondnet/bin/python train_gpu.py --dataset_file='/scratch/sn29/klow12/solvE/solvationML/data/first400.csv' --gpu=0 
+/projects/sn29/klow12/conda_envs/bondnet/bin/python train_gpu.py --dataset_file='/scratch/sn29/klow12/solvE/solvationML/data/first400.csv' --gpu=0 --save-dir=/scratch/sn29/klow12/solvE/gnn/saved_models/submitted 
