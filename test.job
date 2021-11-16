@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --account=sn29
@@ -15,4 +15,4 @@ source activate $CONDA_ENVS/bondnet
 
 export NUM_GPU=1
 
-/projects/sn29/klow12/conda_envs/bondnet/bin/python train_gpu.py --dataset_file='/scratch/sn29/klow12/solvE/solvationML/data/first400.csv' --gpu=0 --save-dir=/scratch/sn29/klow12/solvE/gnn/saved_models/submitted 
+/projects/sn29/klow12/conda_envs/bondnet/bin/python train_gpu.py --dataset-file='/scratch/sn29/klow12/solvE/solvationML/data/first800.csv' --gpu=0 --save-dir=/scratch/sn29/klow12/solvE/gnn/saved_models/first800 --random-seed=0

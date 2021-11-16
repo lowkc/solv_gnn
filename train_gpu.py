@@ -1,4 +1,5 @@
 import logging
+import pickle
 import sys, os
 import time
 import warnings
@@ -38,10 +39,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="GatedSolvationNetwork")
 
     # input files
-    parser.add_argument('--dataset_file', type=str, default=None)
+    parser.add_argument('--dataset-file', type=str, default=None)
 
-    # where to save log files
+    # output dir
     parser.add_argument('--save-dir', type=str, default=None)
+
+    parser.add_argument('--random-seed', type=int, default=0)
 
     # embedding layer
     parser.add_argument("--embedding-size", type=int, default=24)
@@ -188,7 +191,7 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
 
     return epoch_loss, accuracy
 
-def evaluate(model, nodes, data_loader, metric_fn, device=None):
+def evaluate(model, nodes, data_loader, metric_fn, device=None, verbose=False):
     """
     Evaluate the accuracy of an validation set of test set.
     Args:
@@ -229,7 +232,11 @@ def evaluate(model, nodes, data_loader, metric_fn, device=None):
             accuracy += metric_fn(pred, target, stdev).detach().item()
             count += len(target)
 
-    return accuracy / count
+    if verbose:
+        return accuracy / count, target, pred
+
+    else:
+        return accuracy / count
 
 def get_grapher():
     atom_featurizer = AtomFeaturizerFull()
@@ -290,7 +297,7 @@ def main_worker(gpu, world_size, args):
         )
 
     trainset, valset, testset = train_validation_test_split(
-        dataset, validation=0.1, test=0.1
+        dataset, validation=0.1, test=0.1, random_seed=args.random_seed,
     )
 
     if not args.distributed or (args.distributed and args.gpu == 0):
@@ -472,10 +479,13 @@ def main_worker(gpu, world_size, args):
         )
 
     if not args.distributed or (args.distributed and args.gpu == 0):
-        test_acc = evaluate(model, feature_names, test_loader, metric, args.gpu)
+        test_acc, y_true, y_pred = evaluate(model, feature_names, test_loader, metric, args.gpu, verbose=True)
+
+        results_dict = {'y_true': y_true, 'y_pred': y_pred}
 
         print("\n#TestAcc: {:12.6e} \n".format(test_acc))
         print("\nFinish training at:", datetime.now())
+        pickle_dump(results_dict, os.path.join(args.save_dir, 'test_results.pkl'))
 
 
 def main():

@@ -6,9 +6,7 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from rdkit import Chem
-#from bondnet.data.reaction_network import ReactionInNetwork, ReactionNetwork
 from gnn.data.transformers import HeteroGraphFeatureStandardScaler, StandardScaler
-#from bondnet.data.utils import get_dataset_species
 from gnn.utils import to_path, list_split_by_size
 
 logger = logging.getLogger(__name__)
@@ -549,8 +547,8 @@ class SolvationDataset():
         extra_features=None,
         feature_transformer=True,
         label_transformer=True,
-        properties=["DeltaGsolv"],
-        unit_conversion=True,
+        #properties=["DeltaGsolv"],
+        #unit_conversion=True,
         dtype="float32",
         state_dict_filename=None,
     ):
@@ -575,6 +573,10 @@ class SolvationDataset():
 
         self.graphs = None
         self.labels = None
+
+        self.label_scaler = None
+        self.featuer_scaler = None
+
         self._feature_size = None
         self._feature_name = None
         self._feature_scaler_mean = None
@@ -609,10 +611,6 @@ class SolvationDataset():
                 if z[0] is not None and z[1] is not None:
                     molecules.append((Chem.AddHs(z[0]), Chem.AddHs(z[1])))
 
-            # solute_mols = [Chem.AddHs(m) for m in supp_0 if m is not None]
-            # solvent_mols = [Chem.AddHs(m) for m in supp_1 if m is not None]
-            # molecules = zip(solute_mols, solvent_mols)
-            # molecules = list(molecules)
             logger.info('Removed {} invalid SMILES.'.format(original_len - len(molecules)))
         return molecules
     
@@ -636,7 +634,7 @@ class SolvationDataset():
 
         self.graphs = []
         self.labels = []
-        natoms = [] # TODO: change to allow solutes and solvents.
+
         for i, (mol, feats, lb) in enumerate(zip(molecules, features, raw_labels)):
             if i % 100 == 0:
                 logger.info("Processing molecule {}/{}".format(i, len(raw_labels)))
@@ -647,7 +645,6 @@ class SolvationDataset():
                 solvent = mol[1]
                 g_solute = self.grapher.build_graph_and_featurize(solute, extra_feats_info=feats, dataset_species=species)
                 g_solvent = self.grapher.build_graph_and_featurize(solvent, extra_feats_info=feats, dataset_species=species)
-                # TODO: Add solvent
 
                 # added for checking purposes
                 g_solute.graph_id = i
@@ -661,64 +658,67 @@ class SolvationDataset():
 
         # this should be called after grapher.build_graph_and_featurize,
         # which initializes the feature name and size
-        self._feature_name = self.grapher.feature_name
-        self._feature_size = self.grapher.feature_size
+        
+        if self.state_dict_filename is not None:
+            state_dict = self.state_dict_filename
+            self.load_state_dict(state_dict)
+        
+        else:
+            self._feature_name = self.grapher.feature_name
+            self._feature_size = self.grapher.feature_size
+
+
         logger.info("Feature name: {}".format(self.feature_name))
         logger.info("Feature size: {}".format(self.feature_size))
-
-        # feature and label transformer
-        if self.feature_transformer:
-            num_graphs = self.graphs
-            graphs = list(itertools.chain.from_iterable(self.graphs))
-            feature_scaler = HeteroGraphFeatureStandardScaler()
-            graphs = feature_scaler(graphs)
-            # Split back into lists of two
-            self.graphs = list_split_by_size(graphs, [2]*len(num_graphs))
-            logger.info("Feature scaler mean: {}".format(feature_scaler.mean))
-            logger.info("Feature scaler std: {}".format(feature_scaler.std))
-        
-        if self.label_transformer:
-            labels = np.asarray([lb["value"].numpy() for lb in self.labels])
-            scaled_labels = []
-            scaler_mean = []
-            scaler_std = []
-
-            label_scaler_mean = []
-            label_scaler_std = []
-
-            scaler = StandardScaler()
-            lb = labels.reshape(-1,1) # 2D array of shape (N, 1)
-            lb = scaler(lb)
-            lb = lb.ravel()
-            mean = np.repeat(scaler.mean, len(lb))
-            std = np.repeat(scaler.std, len(lb))
-            label_scaler_mean.append(scaler.mean)
-            label_scaler_std.append(scaler.std)
-
-            scaled_labels.append(lb)
-            scaler_mean.append(mean)
-            scaler_std.append(std)
-
-            scaled_labels = torch.tensor(
-                np.asarray(scaled_labels).T, dtype=getattr(torch, self.dtype)
-            )
-            scaler_mean = torch.tensor(
-                np.asarray(scaler_mean).T, dtype=getattr(torch, self.dtype)
-            )
-            scaler_std = torch.tensor(
-                np.asarray(scaler_std).T, dtype=getattr(torch, self.dtype)
-            )
-
-            for i, (lb, m, s) in enumerate(zip(scaled_labels, scaler_mean, scaler_std)):
-                self.labels[i]["value"] = lb
-                self.labels[i]["scaler_mean"] = m
-                self.labels[i]["scaler_stdev"] = s
-
-            logger.info("Label scaler mean: {}".format(label_scaler_mean))
-            logger.info("Label scaler std: {}".format(label_scaler_std))
-
         logger.info("Finish loading {} labels...".format(len(self.labels)))
 
+
+    def normalize_features(self, scaler: HeteroGraphFeatureStandardScaler = None, replace_nan_token: int = 0):
+        """
+        If a StandardScaler` is provided, it is used to perform the normalization.
+        Otherwise, a StandardScaler` is first fit to the features in this dataset
+        and is then used to perform the normalization.
+        """
+        num_graphs = self.graphs
+        graphs = list(itertools.chain.from_iterable(self.graphs))
+        feature_scaler = HeteroGraphFeatureStandardScaler()
+        graphs = feature_scaler.transform(graphs)
+        # Split back into lists of two
+        self.graphs = list_split_by_size(graphs, [2]*len(num_graphs))
+
+        return feature_scaler
+
+    def normalize_labels(self):
+        """
+        Normalizes the targets of the dataset using a StandardScaler.
+        Returns a StandardScaler fitted to the targets which can be used for predictions.
+        """
+        labels = np.asarray([lb["value"].numpy() for lb in self.labels])
+        scaled_labels = []
+        #scaler_mean = []
+        #scaler_std = []
+
+        label_scaler = StandardScaler()
+        lb = labels.reshape(-1,1) # 2D array of shape (N, 1)
+        lb = label_scaler.transform(lb)
+        mean = np.repeat(label_scaler.mean, len(lb))
+        std = np.repeat(label_scaler.std, len(lb))
+        lb = lb.ravel()
+
+        scaled_labels.append(lb)
+        #scaler_mean.append(mean)
+        #scaler_std.append(std)
+        scaled_labels = torch.tensor(np.asarray(scaled_labels).T, dtype=getattr(torch, self.dtype))
+        #scaler_mean = torch.tensor(np.asarray(scaler_mean).T, dtype=getattr(torch, self.dtype))
+        #scaler_std = torch.tensor(np.asarray(scaler_std).T, dtype=getattr(torch, self.dtype))
+
+        #for i, (lb, m, s) in enumerate(zip(scaled_labels, scaler_mean, scaler_std)):
+        for i, lb in enumerate(scaled_labels):
+            self.labels[i]["value"] = lb
+            #self.labels[i]["scaler_mean"] = m
+            #self.labels[i]["scaler_stdev"] = s
+
+        return label_scaler
 
     @property
     def feature_size(self):
@@ -814,14 +814,15 @@ class SolvationDataset():
             rst += "Feature: {}, name: {}\n".format(ft, nm)
         return rst
 
-    
 
-class Subset(BaseDataset):
+class Subset(SolvationDataset):
     def __init__(self, dataset, indices):
         self.dtype = dataset.dtype
         self.dataset = dataset
         self.indices = indices
-
+        self.labels = [self.dataset.labels[j] for j in indices]
+        self.graphs = [self.dataset.graphs[j] for j in indices]
+    
     @property
     def feature_size(self):
         return self.dataset.feature_size
@@ -892,4 +893,4 @@ def train_validation_test_split(dataset, validation=0.1, test=0.1, random_seed=0
         Subset(dataset, train_idx),
         Subset(dataset, val_idx),
         Subset(dataset, test_idx),
-    ]
+          ]

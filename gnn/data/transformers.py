@@ -56,14 +56,16 @@ class StandardScaler:
     def std(self):
         return self._std
 
-    def __call__(self, X):
-
+    def transform(self, X):
         if self._mean is not None and self._std is not None:
-            X = (X - self._mean) / self._std
+            X_transformed = (X - self._mean) / self._std
         else:
-            X, self._mean, self._std = _transform(X, self.copy)
+            X_transformed, self._mean, self._std = _transform(X, self.copy)
 
-        return X
+        return X_transformed
+
+    def inverse_transform(self, X_transformed):
+        return (X_transformed * self._std) + self._mean
 
 
 class HomoGraphFeatureStandardScaler:
@@ -179,7 +181,7 @@ class HeteroGraphFeatureStandardScaler:
     def std(self):
         return self._std
 
-    def __call__(self, graphs) -> List[dgl.DGLGraph]:
+    def transform(self, graphs) -> List[dgl.DGLGraph]:
         g = graphs[0]
         node_types = g.ntypes
         node_feats = defaultdict(list)
@@ -213,6 +215,30 @@ class HeteroGraphFeatureStandardScaler:
                 self._std[nt] = std
 
         # assign data back
+        for nt in node_types:
+            feats = torch.split(node_feats[nt], node_feats_size[nt])
+            for g, ft in zip(graphs, feats):
+                g.nodes[nt].data["feat"] = ft
+
+        return graphs
+
+    def inverse_transform(self, graphs) -> List[dgl.DGLGraph]:
+        g = graphs[0]
+        node_types = g.ntypes
+        node_feats = defaultdict(list)
+        node_feats_size = defaultdict(list)
+
+        # obtain feats from graphs
+        for g in graphs:
+            for nt in node_types:
+                data = g.nodes[nt].data["feat"]
+                node_feats[nt].append(data)
+                node_feats_size[nt].append(len(data))
+
+        dtype = node_feats[node_types[0]][0].dtype
+        for nt in node_types:
+                feats = (torch.cat(node_feats[nt]) - self._mean[nt]) / self._std[nt]
+                node_feats[nt] = feats
         for nt in node_types:
             feats = torch.split(node_feats[nt], node_feats_size[nt])
             for g, ft in zip(graphs, feats):
