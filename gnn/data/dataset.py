@@ -67,8 +67,8 @@ class BaseDataset:
         molecules,
         labels,
         extra_features=None,
-        feature_transformer=True,
-        label_transformer=True,
+        feature_transformer=False,
+        label_transformer=False,
         dtype="float32",
         state_dict_filename=None,
     ):
@@ -613,6 +613,12 @@ class SolvationDataset():
 
             logger.info('Removed {} invalid SMILES.'.format(original_len - len(molecules)))
         return molecules
+
+    @staticmethod
+    def get_features(features):
+        if isinstance(features, Path):
+            features = pd.read_csv(features, index_col=None)
+        return features
     
 
     def _load(self):

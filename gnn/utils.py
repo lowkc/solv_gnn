@@ -86,7 +86,7 @@ def seed_torch(seed=35, cudnn_benchmark=False, cudnn_deterministic=False):
 
 
 def save_checkpoints(
-    state_dict_objects, misc_objects, is_best, msg=None, save_dir=None, filename="checkpoint.pkl"
+    state_dict_objects, misc_objects, scaler_objects, is_best, msg=None, save_dir=None, filename="checkpoint.pkl"
 ):
     """
     Save checkpoints for all objects for later recovery.
@@ -94,9 +94,11 @@ def save_checkpoints(
         state_dict_objects (dict): A dictionary of objects to save. The object should
             have state_dict() (e.g. model, optimizer, ...)
         misc_objects (dict): plain python object to save
+        scaler_objects (dict): plain python dictionary, contains scaler information
         filename (str): filename for the checkpoint
     """
     objects = copy.copy(misc_objects)
+    objects.update(scaler_objects)
     for k, obj in state_dict_objects.items():
         objects[k] = obj.state_dict()
     torch.save(objects, os.path.join(save_dir, filename))
