@@ -38,7 +38,8 @@ class GatedGCNMol(nn.Module):
 
     def __init__(
         self,
-        in_feats,
+        solute_in_feats,
+        solvent_in_feats,
         embedding_size=32,
         gated_num_layers=2,
         gated_hidden_size=[64, 64, 32],
@@ -66,8 +67,9 @@ class GatedGCNMol(nn.Module):
         if isinstance(fc_activation, str):
             fc_activation = getattr(nn, fc_activation)()
         # embedding layer
-        self.embedding = UnifySize(in_feats, embedding_size)
-
+        self.solute_embedding = UnifySize(solute_in_feats, embedding_size)
+        self.solvent_embedding = UnifySize(solvent_in_feats, embedding_size)
+        
         # gated layer
         if conv == "GatedGCNConv":
             conv_fn = GatedGCNConv

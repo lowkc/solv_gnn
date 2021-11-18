@@ -19,8 +19,8 @@ class GatedGCNSolvationNetwork(GatedGCNMol):
             2D tensor: of shape(N, M), where M = outdim.
         """
         # embed the solute and solvent
-        solute_feats = self.embedding(solute_feats)
-        solvent_feats = self.embedding(solvent_feats)
+        solute_feats = self.solute_embedding(solute_feats)
+        solvent_feats = self.solvent_embedding(solvent_feats)
 
         # pass through gated layer
         for layer in self.gated_layers:

@@ -541,10 +541,12 @@ class MoleculeDataset(BaseDataset):
 class SolvationDataset():
     def __init__(
         self,
-        grapher,
+        solute_grapher,
         molecules,
         labels,
-        extra_features=None,
+        solvent_grapher=None,
+        solvent_extra_features=None,
+        solute_extra_features=None,
         feature_transformer=True,
         label_transformer=True,
         #properties=["DeltaGsolv"],
@@ -556,15 +558,26 @@ class SolvationDataset():
         if dtype not in ["float32", "float64"]:
             raise ValueError(f"`dtype {dtype}` should be `float32` or `float64`.")
 
-        self.grapher = grapher
+        # Graphers - option to have a separate one for solute and solvent.
+        self.solute_grapher = solute_grapher
+        if solvent_grapher is None:
+            self.solvent_grapher = solute_grapher
+        else:
+            self.solvent_grapher = solvent_grapher
+
         self.molecules = (
             to_path(molecules) if isinstance(molecules, (str, Path)) else molecules
         )
         self.raw_labels = to_path(labels) if isinstance(labels, (str, Path)) else labels
-        self.extra_features = (
-            to_path(extra_features)
-            if isinstance(extra_features, (str, Path))
-            else extra_features
+        self.solute_extra_features = (
+            to_path(solute_extra_features)
+            if isinstance(solute_extra_features, (str, Path))
+            else solute_extra_features
+        )
+        self.solvent_extra_features = (
+            to_path(solvent_extra_features)
+            if isinstance(solvent_extra_features, (str, Path))
+            else solvent_extra_features
         )
         self.feature_transformer = feature_transformer
         self.label_transformer = label_transformer
@@ -617,31 +630,32 @@ class SolvationDataset():
     @staticmethod
     def get_features(features):
         if isinstance(features, Path):
-            features = pd.read_csv(features, index_col=None)
+            features = pd.read_csv(features, index_col=None, header=None)
+            features = np.asarray(features)
         return features
     
 
     def _load(self):
         logger.info("Start loading dataset.")
-        # Get molecules, labels, and extra features
+        # Get molecules, labels, atom types, and extra features
         molecules = self.get_molecules(self.molecules)
         raw_labels = self.get_labels(self.raw_labels)
-        if self.extra_features is not None:
-            extra_features = self.get_features(self.extra_features)
-        else:
-            extra_features = [None] * len(molecules)
         species = get_dataset_species(molecules)
 
-        if self.extra_features is not None:
-            # Load features function
-            pass
+        if self.solute_extra_features is not None:
+            solute_features = self.get_features(self.solute_extra_features)
         else:
-            features = [None] * len(raw_labels)
+            solute_features = [None] * len(raw_labels)
+
+        if self.solvent_extra_features is not None:
+            solvent_features = self.get_features(self.solvent_extra_features)
+        else:
+            solvent_features = [None] * len(raw_labels)
 
         self.graphs = []
         self.labels = []
 
-        for i, (mol, feats, lb) in enumerate(zip(molecules, features, raw_labels)):
+        for i, (mol, solu_feats, solv_feats, lb) in enumerate(zip(molecules, solute_features, solvent_features, raw_labels)):
             if i % 100 == 0:
                 logger.info("Processing molecule {}/{}".format(i, len(raw_labels)))
             
@@ -649,8 +663,8 @@ class SolvationDataset():
                 # make molecular graph
                 solute = mol[0]
                 solvent = mol[1]
-                g_solute = self.grapher.build_graph_and_featurize(solute, extra_feats_info=feats, dataset_species=species)
-                g_solvent = self.grapher.build_graph_and_featurize(solvent, extra_feats_info=feats, dataset_species=species)
+                g_solute = self.solute_grapher.build_graph_and_featurize(solute, extra_feats_info=solu_feats, dataset_species=species)
+                g_solvent = self.solvent_grapher.build_graph_and_featurize(solvent, extra_feats_info=solv_feats, dataset_species=species)
 
                 # added for checking purposes
                 g_solute.graph_id = i
@@ -670,29 +684,45 @@ class SolvationDataset():
             self.load_state_dict(state_dict)
         
         else:
-            self._feature_name = self.grapher.feature_name
-            self._feature_size = self.grapher.feature_size
+            self._solute_feature_name = self.solute_grapher.feature_name
+            self._solute_feature_size = self.solute_grapher.feature_size
+            self._solvent_feature_name = self.solvent_grapher.feature_name
+            self._solvent_feature_size = self.solvent_grapher.feature_size
 
-
-        logger.info("Feature name: {}".format(self.feature_name))
-        logger.info("Feature size: {}".format(self.feature_size))
+        logger.info("Feature name: {}".format(self.feature_names))
+        logger.info("Feature size: {}".format(self.feature_sizes))
         logger.info("Finish loading {} labels...".format(len(self.labels)))
 
 
-    def normalize_features(self, scaler: HeteroGraphFeatureStandardScaler = None, replace_nan_token: int = 0):
+    def normalize_features(self, solute_scaler: HeteroGraphFeatureStandardScaler = None,
+                                 solvent_scaler: HeteroGraphFeatureStandardScaler = None,
+                                 replace_nan_token: int = 0):
         """
         If a StandardScaler` is provided, it is used to perform the normalization.
         Otherwise, a StandardScaler` is first fit to the features in this dataset
         and is then used to perform the normalization.
         """
         num_graphs = self.graphs
-        graphs = list(itertools.chain.from_iterable(self.graphs))
-        feature_scaler = HeteroGraphFeatureStandardScaler()
-        graphs = feature_scaler.transform(graphs)
-        # Split back into lists of two
-        self.graphs = list_split_by_size(graphs, [2]*len(num_graphs))
+        solute_graphs = list(itertools.chain.from_iterable(self.graphs))[::2]
+        solvent_graphs = list(itertools.chain.from_iterable(self.graphs))[1::2]
 
-        return feature_scaler
+        if solute_scaler is None and solvent_scaler is None:
+            solute_scaler = HeteroGraphFeatureStandardScaler()
+            solvent_scaler = HeteroGraphFeatureStandardScaler()
+
+            solute_graphs = solute_scaler.transform(solute_graphs)
+            solvent_graphs = solvent_scaler.transform(solvent_graphs)
+
+            # Split back into lists of two
+            #self.graphs = list_split_by_size(graphs, [2]*len(num_graphs))
+            self.graphs = list(zip(solute_graphs, solvent_graphs))
+        
+        else:
+            solute_graphs = solute_scaler.transform(solute_graphs)
+            solvent_graphs = solvent_scaler.transform(solvent_graphs)
+            self.graphs = list(zip(solute_graphs, solvent_graphs))
+
+        return solute_scaler, solvent_scaler
 
     def normalize_labels(self):
         """
@@ -727,18 +757,18 @@ class SolvationDataset():
         return label_scaler
 
     @property
-    def feature_size(self):
+    def feature_sizes(self):
         """
         Returns a dict of feature size with node type as the key.
         """
-        return self._feature_size
-
+        return self._solute_feature_size, self._solvent_feature_size
+    
     @property
-    def feature_name(self):
+    def feature_names(self):
         """
         Returns a dict of feature name with node type as the key.
         """
-        return self._feature_name
+        return self._solute_feature_name, self._solvent_feature_name
 
     def get_feature_size(self, ntypes):
         """
@@ -750,9 +780,9 @@ class SolvationDataset():
         """
         size = []
         for nt in ntypes:
-            for k in self.feature_size:
+            for k in self.solute_feature_size:
                 if nt in k:
-                    size.append(self.feature_size[k])
+                    size.append(self.solute_feature_size[k])
         # TODO more checks needed e.g. one node get more than one size
         msg = f"cannot get feature size for nodes: {ntypes}"
         assert len(ntypes) == len(size), msg
@@ -814,10 +844,16 @@ class SolvationDataset():
     def __repr__(self):
         rst = "Dataset " + self.__class__.__name__ + "\n"
         rst += "Length: {}\n".format(len(self))
-        for ft, sz in self.feature_size.items():
-            rst += "Feature: {}, size: {}\n".format(ft, sz)
-        for ft, nm in self.feature_name.items():
-            rst += "Feature: {}, name: {}\n".format(ft, nm)
+
+        for ft, sz in self.feature_sizes[0].items():
+            rst += "Solvent feature: {}, size: {}\n".format(ft, sz)
+        for ft, sz in self.feature_sizes[1].items():
+            rst += "Solute feature: {}, size: {}\n".format(ft, sz)
+
+        for ft, nm in self.feature_names[0].items():
+            rst += "Solute feature: {}, name: {}\n".format(ft, nm)
+        for ft, nm in self.feature_names[1].items():
+            rst += "Solvent feature: {}, name: {}\n".format(ft, nm)
         return rst
 
 
@@ -830,12 +866,12 @@ class Subset(SolvationDataset):
         self.graphs = [self.dataset.graphs[j] for j in indices]
     
     @property
-    def feature_size(self):
-        return self.dataset.feature_size
+    def feature_sizes(self):
+        return self.dataset.feature_sizes
 
     @property
-    def feature_name(self):
-        return self.dataset.feature_name
+    def feature_names(self):
+        return self.dataset.feature_names
 
     def __getitem__(self, idx):
         return self.dataset[self.indices[idx]]
@@ -857,9 +893,11 @@ def load_mols_labels(file):
     zipped = zip(supp_0, supp_1)
     molecules = []
 
-    for z in zipped:
+    for i, z in enumerate(zipped):
         if z[0] is not None and z[1] is not None:
             molecules.append((Chem.AddHs(z[0]), Chem.AddHs(z[1])))
+        else:
+            print(i, z[0], z[1])
 
     if original_len != len(molecules):    
         logger.info('Removed {} invalid SMILES.'.format(original_len - len(molecules)))

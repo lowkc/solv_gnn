@@ -60,7 +60,7 @@ class BondFeaturizer(BaseFeaturizer):
     def __init__(
         self, length_featurizer=None, length_featurizer_args=None, dtype="float32"
     ):
-        super(BondFeaturizer, self).__init__(dtype)
+        super().__init__(dtype)
         self._feature_size = None
         self._feature_name = None
 
@@ -162,7 +162,7 @@ class BondAsNodeFeaturizerFull(BondFeaturizer):
         dative=False,
         dtype="float32",
     ):
-        super(BondAsNodeFeaturizerFull, self).__init__(
+        super().__init__(
             length_featurizer, length_featurizer_args, dtype
         )
         self.dative = dative
@@ -418,12 +418,15 @@ class GlobalFeaturizer(BaseFeaturizer):
         allowed_charges (list, optional): charges allowed the the molecules to take.
         solvent_environment (list, optional): solvent environment in which the
         calculations for the molecule take place
+        dielectric_constant (list)
     """
 
-    def __init__(self, allowed_charges=None, solvent_environment=None, dtype="float32"):
-        super(GlobalFeaturizer, self).__init__(dtype)
+    def __init__(self, allowed_charges=None, solvent_environment=None, dielectric_constant=None,
+                 dtype="float32"):
+        super().__init__(dtype)
         self.allowed_charges = allowed_charges
         self.solvent_environment = solvent_environment
+        self.dielectric_constant = dielectric_constant
 
     def __call__(self, mol, **kwargs):
 
@@ -434,7 +437,7 @@ class GlobalFeaturizer(BaseFeaturizer):
             sum([pt.GetAtomicWeight(a.GetAtomicNum()) for a in mol.GetAtoms()]),
         ]
 
-        if self.allowed_charges is not None or self.solvent_environment is not None:
+        if self.allowed_charges is not None or self.solvent_environment is not None or self.dielectric_constant is not None:
             try:
                 feats_info = kwargs["extra_feats_info"]
             except KeyError as e:
@@ -443,6 +446,8 @@ class GlobalFeaturizer(BaseFeaturizer):
                         e, self.__class__.__name__
                     )
                 )
+            if self.dielectric_constant is True:
+                g += [feats_info]
 
             if self.allowed_charges is not None:
                 g += one_hot_encoding(feats_info["charge"], self.allowed_charges)
@@ -462,6 +467,8 @@ class GlobalFeaturizer(BaseFeaturizer):
 
         self._feature_size = feats.shape[1]
         self._feature_name = ["num atoms", "num bonds", "molecule weight"]
+        if self.dielectric_constant is not None:
+            self._feature_name += ["dielectric constant"]
         if self.allowed_charges is not None:
             self._feature_name += ["charge one hot"] * len(self.allowed_charges)
         if self.solvent_environment is not None:
