@@ -2,6 +2,7 @@
 Featurise a molecule heterograph of atom, bond, and global nodes with RDKit.
 """
 
+from dgl.batch import _batch_feat_dicts
 import torch
 import os
 import itertools
@@ -9,8 +10,10 @@ from collections import defaultdict
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import ChemicalFeatures
+from rdkit.Chem import AllChem
 from rdkit import RDConfig
 from rdkit.Chem.rdchem import GetPeriodicTable
+from openbabel import pybel
 
 class BaseFeaturizer:
     def __init__(self, dtype="float32"):
@@ -369,12 +372,12 @@ class AtomFeaturizerFull(BaseFeaturizer):
             ft += one_hot_encoding(
                 atom.GetHybridization(),
                 [
-                    Chem.rdchem.HybridizationType.S,
+                    # Chem.rdchem.HybridizationType.S,
                     Chem.rdchem.HybridizationType.SP,
                     Chem.rdchem.HybridizationType.SP2,
                     Chem.rdchem.HybridizationType.SP3,
-                    # Chem.rdchem.HybridizationType.SP3D,
-                    # Chem.rdchem.HybridizationType.SP3D2,
+                    Chem.rdchem.HybridizationType.SP3D,
+                    Chem.rdchem.HybridizationType.SP3D2,
                 ],
             )
 
@@ -410,22 +413,210 @@ class AtomFeaturizerFull(BaseFeaturizer):
 
         return {"feat": feats}
 
+
+def atom_lone_pairs(atom):
+    atom_num = atom.GetAtomicNum()
+    dv = Chem.PeriodicTable.GetDefaultValence(Chem.GetPeriodicTable(), atom_num) # default valence
+    nlp = Chem.PeriodicTable.GetNOuterElecs(Chem.GetPeriodicTable(), atom_num) - dv
+    # subtract the charge to get the true number of lone pair electrons
+    nlp -= atom.GetFormalCharge()
+    return nlp
+
+class SolventAtomFeaturizer(BaseFeaturizer):
+    """
+    Featurize atoms in a molecule.
+    The atom indices will be preserved, i.e. feature i corresponds to atom i.
+    """
+
+    def __call__(self, mol, **kwargs):
+        """
+        Parameters
+        ----------
+        mol : rdkit.Chem.rdchem.Mol
+            RDKit molecule object
+        Returns
+        -------
+            Dictionary for atom features
+        """
+        try:
+            species = sorted(kwargs["dataset_species"])
+        except KeyError as e:
+            raise KeyError(
+                "{} `dataset_species` needed for {}.".format(e, self.__class__.__name__)
+            )
+
+        feats = []
+
+        ring = mol.GetRingInfo()
+        allowed_ring_size = [3, 4, 5, 6, 7]
+
+        HDonorSmarts = Chem.MolFromSmarts('[$([N;!H0;v3]),$([N;!H0;+1;v4]),$([O,S;H1;+0]),$([n;H1;+0])]')
+        HAcceptorSmarts = Chem.MolFromSmarts('[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),' +
+                                     '$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),' +
+                                     '$([nH0,o,s;+0])]')
+
+        hbond_acceptors = sum(mol.GetSubstructMatches(HAcceptorSmarts), ())
+        hbond_donors = sum(mol.GetSubstructMatches(HDonorSmarts), ())
+
+        num_atoms = mol.GetNumAtoms()
+        for u in range(num_atoms):
+            ft = []
+
+            atom = mol.GetAtomWithIdx(u)
+
+            ft.append(atom.GetTotalDegree())
+            ft.append(atom.GetFormalCharge())
+
+            ft.append(int(atom.GetIsAromatic()))
+            ft.append(int(atom.IsInRing()))
+
+            ft.append(Chem.PeriodicTable.GetRvdw(Chem.GetPeriodicTable(), atom.GetAtomicNum())) # vdW radius
+            ft.append(atom_lone_pairs(atom)) # Number of lone pairs
+
+            ft.append(atom.GetTotalNumHs(includeNeighbors=True))
+
+            if u in hbond_acceptors:
+                ft.append(1)
+            else: 
+                ft.append(0)
+
+            if u in hbond_donors:
+                ft.append(1)
+            else:
+                ft.append(0)
+
+            ft += one_hot_encoding(atom.GetSymbol(), species)
+
+            ft += one_hot_encoding(
+                atom.GetHybridization(),
+                [
+                    Chem.rdchem.HybridizationType.SP,
+                    Chem.rdchem.HybridizationType.SP2,
+                    Chem.rdchem.HybridizationType.SP3,
+                    Chem.rdchem.HybridizationType.SP3D,
+                    Chem.rdchem.HybridizationType.SP3D2,
+                ],
+            )
+
+            for s in allowed_ring_size:
+                ft.append(ring.IsAtomInRingOfSize(u, s))
+
+            feats.append(ft)
+
+        feats = torch.tensor(feats, dtype=getattr(torch, self.dtype))
+        self._feature_size = feats.shape[1]
+        self._feature_name = (
+            [
+                "total degree",
+                "formal charge",
+                "is aromatic",
+                "is in ring",
+                "van der Waals radius",
+                "num lone pairs",
+                "num total H",
+                "H bond acceptor",
+                "H bond donor",
+            ]
+            + ["chemical symbol"] * len(species)
+            + ["hybridization"] * 4
+            + ["ring size"] * 5
+        )
+
+        return {"feat": feats}
+
+
+class SolventGlobalFeaturizer(BaseFeaturizer):
+    """
+    Featurize the global state of a molecules using number of H-bond acceptors, number of H-bond donors,
+    molecular weight, and optionally charge and solvent environment.
+    Args:
+        allowed_charges (list, optional): charges allowed the the molecules to take.
+        volume (bool, optional): include the molecular volume (rdkit calculated) of the molecule.
+        dielectric_constant (optional): include the dielectric constant of the solvent. This is read in from a separate file.
+    """
+
+    def __init__(self, allowed_charges=None, dielectric_constant=None, mol_volume=False, mol_refract=False,
+                 dtype="float32"):
+        super().__init__(dtype)
+        self.allowed_charges = allowed_charges
+        self.mol_volume = mol_volume
+        self.dielectric_constant = dielectric_constant
+        self.mol_refract = mol_refract
+
+    def __call__(self, mol, **kwargs):
+
+        pt = GetPeriodicTable()
+        g = [
+            mol.GetNumAtoms(),
+            mol.GetNumBonds(),
+            sum([pt.GetAtomicWeight(a.GetAtomicNum()) for a in mol.GetAtoms()]),
+        ]
+
+        if self.allowed_charges is not None or self.dielectric_constant is not None or self.mol_volume is not False:
+            # Read these values from an additional file
+            try:
+                feats_info = kwargs["extra_feats_info"]
+            except KeyError as e:
+                raise KeyError(
+                    "{} `extra_feats_info` needed for {}.".format(
+                        e, self.__class__.__name__
+                    )
+                )
+            
+            if self.dielectric_constant is not None:
+                g += [feats_info]
+
+            if self.allowed_charges is not None:
+                g += one_hot_encoding(feats_info["charge"], self.allowed_charges)
+
+            if self.mol_volume:
+                try:
+                    AllChem.EmbedMolecule(mol)
+                    AllChem.MMFFOptimizeMolecule(mol) # MMFF94
+                    g += [AllChem.ComputeMolVolume(mol)] 
+                except ValueError as e:
+                    mol_smiles = Chem.MolToSmiles(mol)
+                    pybel_mol = pybel.readstring("smi", mol_smiles)
+                    pybel_mol.make3D(forcefield='mmff94', steps=100)
+                    pdb = pybel_mol.write("pdb")
+                    rd_mol = Chem.MolFromPDBBlock(pdb)
+                    g += [AllChem.ComputeMolVolume(rd_mol)]
+
+            if self.mol_refract:
+                _, mr = AllChem.CalcCrippenDescriptors(mol)
+                g += mr
+
+        feats = torch.tensor([g], dtype=getattr(torch, self.dtype))
+
+        self._feature_size = feats.shape[1]
+        self._feature_name = ["num atoms", "num bonds", "molecule weight"]
+        if self.dielectric_constant is not None:
+            self._feature_name += ["dielectric constant"]
+        if self.allowed_charges is not None:
+            self._feature_name += ["charge one hot"] * len(self.allowed_charges)
+        if self.mol_volume is not False:
+            self._feature_name += ["molecular volume"]
+        if self.mol_refract is not False:
+            self._feature_name += ["molecular refractivity"]
+
+        return {"feat": feats}
+
+
 class GlobalFeaturizer(BaseFeaturizer):
     """
     Featurize the global state of a molecules using number of atoms, number of bonds,
     molecular weight, and optionally charge and solvent environment.
     Args:
         allowed_charges (list, optional): charges allowed the the molecules to take.
-        solvent_environment (list, optional): solvent environment in which the
-        calculations for the molecule take place
-        dielectric_constant (list)
+        volume (bool, optional): include the molecular volume (rdkit calculated) of the molecule.
+        dielectric_constant (optional): include the dielectric constant of the solvent. This is read in from a separate file.
     """
 
-    def __init__(self, allowed_charges=None, solvent_environment=None, dielectric_constant=None,
+    def __init__(self, allowed_charges=None, dielectric_constant=None, mol_volume=False, 
                  dtype="float32"):
         super().__init__(dtype)
         self.allowed_charges = allowed_charges
-        self.solvent_environment = solvent_environment
+        self.mol_volume = mol_volume
         self.dielectric_constant = dielectric_constant
 
     def __call__(self, mol, **kwargs):
@@ -437,7 +628,8 @@ class GlobalFeaturizer(BaseFeaturizer):
             sum([pt.GetAtomicWeight(a.GetAtomicNum()) for a in mol.GetAtoms()]),
         ]
 
-        if self.allowed_charges is not None or self.solvent_environment is not None or self.dielectric_constant is not None:
+        if self.allowed_charges is not None or self.dielectric_constant is not None or self.mol_volume is not False:
+            # Read these values from an additional file
             try:
                 feats_info = kwargs["extra_feats_info"]
             except KeyError as e:
@@ -446,22 +638,25 @@ class GlobalFeaturizer(BaseFeaturizer):
                         e, self.__class__.__name__
                     )
                 )
-            if self.dielectric_constant is True:
+            
+            if self.dielectric_constant is not None:
                 g += [feats_info]
 
             if self.allowed_charges is not None:
                 g += one_hot_encoding(feats_info["charge"], self.allowed_charges)
 
-            if self.solvent_environment is not None:
-                # if only two solvent_environment, we use 0/1 to denote the feature
-                if len(self.solvent_environment) == 2:
-                    ft = self.solvent_environment.index(feats_info["environment"])
-                    g += [ft]
-                # if more than two, we create a one-hot encoding
-                else:
-                    g += one_hot_encoding(
-                        feats_info["environment"], self.solvent_environment
-                    )
+            if self.mol_volume:
+                try:
+                    AllChem.EmbedMolecule(mol)
+                    AllChem.MMFFOptimizeMolecule(mol) # MMFF94
+                    g += [AllChem.ComputeMolVolume(mol)] 
+                except ValueError as e:
+                    mol_smiles = Chem.MolToSmiles(mol)
+                    pybel_mol = pybel.readstring("smi", mol_smiles)
+                    pybel_mol.make3D(forcefield='mmff94', steps=100)
+                    pdb = pybel_mol.write("pdb")
+                    rd_mol = Chem.MolFromPDBBlock(pdb)
+                    g += [AllChem.ComputeMolVolume(rd_mol)]
 
         feats = torch.tensor([g], dtype=getattr(torch, self.dtype))
 
@@ -471,11 +666,8 @@ class GlobalFeaturizer(BaseFeaturizer):
             self._feature_name += ["dielectric constant"]
         if self.allowed_charges is not None:
             self._feature_name += ["charge one hot"] * len(self.allowed_charges)
-        if self.solvent_environment is not None:
-            if len(self.solvent_environment) == 2:
-                self._feature_name += ["solvent"]
-            else:
-                self._feature_name += ["solvent"] * len(self.solvent_environment)
+        if self.mol_volume is not False:
+            self._feature_name += ["molecular volume"]
 
         return {"feat": feats}
 

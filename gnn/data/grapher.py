@@ -182,7 +182,6 @@ class HeteroMoleculeGraph(BaseGraph):
         return g
 
     def featurize(self, g, mol, **kwargs):
-
         if self.atom_featurizer is not None:
             g.nodes["atom"].data.update(self.atom_featurizer(mol, **kwargs))
         if self.bond_featurizer is not None:

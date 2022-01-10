@@ -1,3 +1,5 @@
 saved_models
 *.out
 *.job
+jobs
+bin

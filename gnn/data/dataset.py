@@ -549,8 +549,6 @@ class SolvationDataset():
         solute_extra_features=None,
         feature_transformer=True,
         label_transformer=True,
-        #properties=["DeltaGsolv"],
-        #unit_conversion=True,
         dtype="float32",
         state_dict_filename=None,
     ):
@@ -562,7 +560,7 @@ class SolvationDataset():
         self.solute_grapher = solute_grapher
         if solvent_grapher is None:
             self.solvent_grapher = solute_grapher
-        else:
+        else:          
             self.solvent_grapher = solvent_grapher
 
         self.molecules = (
@@ -590,12 +588,10 @@ class SolvationDataset():
         self.label_scaler = None
         self.featuer_scaler = None
 
-        self._feature_size = None
-        self._feature_name = None
-        self._feature_scaler_mean = None
-        self._feature_scaler_std = None
-        self._label_scaler_mean = None
-        self._label_scaler_std = None
+        self._solute_feature_size = None
+        self._solute_feature_name = None
+        self._solvent_feature_size = None
+        self._solvent_feature_name = None
         self._species = None
         self._failed = None
 
@@ -678,19 +674,26 @@ class SolvationDataset():
 
         # this should be called after grapher.build_graph_and_featurize,
         # which initializes the feature name and size
+
+        self._solute_feature_name = self.solute_grapher.feature_name
+        self._solute_feature_size = self.solute_grapher.feature_size
+        self._solvent_feature_name = self.solvent_grapher.feature_name
+        self._solvent_feature_size = self.solvent_grapher.feature_size
         
         if self.state_dict_filename is not None:
-            state_dict = self.state_dict_filename
+            logger.info(f"Load dataset state dict from: {self.state_dict_filename}")
+            state_dict = torch.load(str(self.state_dict_filename))
             self.load_state_dict(state_dict)
-        
+            species = self.state_dict()["species"]
+            assert species is not None, "Corrupted state_dict file, `species` not found"
         else:
-            self._solute_feature_name = self.solute_grapher.feature_name
-            self._solute_feature_size = self.solute_grapher.feature_size
-            self._solvent_feature_name = self.solvent_grapher.feature_name
-            self._solvent_feature_size = self.solvent_grapher.feature_size
+            species = get_dataset_species(molecules)
+            self._species = species
 
-        logger.info("Feature name: {}".format(self.feature_names))
-        logger.info("Feature size: {}".format(self.feature_sizes))
+        logger.info("Solute feature names: {}".format(self.feature_names[0]))
+        logger.info("Solute feature size: {}".format(self.feature_sizes[0]))
+        logger.info("Solvent feature names: {}".format(self.feature_names[1]))
+        logger.info("Solvent feature size: {}".format(self.feature_sizes[1]))
         logger.info("Finish loading {} labels...".format(len(self.labels)))
 
 
@@ -803,24 +806,20 @@ class SolvationDataset():
 
     def state_dict(self):
         d = {
-            "feature_size": self._feature_size,
-            "feature_name": self._feature_name,
-            "feature_scaler_mean": self._feature_scaler_mean,
-            "feature_scaler_std": self._feature_scaler_std,
-            "label_scaler_mean": self._label_scaler_mean,
-            "label_scaler_std": self._label_scaler_std,
+            "solute feature_size": self._solute_feature_size,
+            "solute feature_name": self._solute_feature_name,
+            "solvent feature_size": self._solvent_feature_size,
+            "solvent feature_name": self._solvent_feature_name,
             "species": self._species,
         }
 
         return d
 
     def load_state_dict(self, d):
-        self._feature_size = d["feature_size"]
-        self._feature_name = d["feature_name"]
-        self._feature_scaler_mean = d["feature_scaler_mean"]
-        self._feature_scaler_std = d["feature_scaler_std"]
-        self._label_scaler_mean = d["label_scaler_mean"]
-        self._label_scaler_std = d["label_scaler_std"]
+        self._solute_feature_size = d["solute feature_size"]
+        self._solute_feature_name = d["solute feature_name"]
+        self._solvent_feature_size = d["solvent feature_size"]
+        self._solvent_feature_name = d["solvent feature_name"]
         self._species = d["species"]
 
     def __getitem__(self, item):

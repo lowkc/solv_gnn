@@ -44,7 +44,7 @@ class GatedGCNConv(nn.Module):
         residual: bool = False,
         dropout: Union[float, None] = None,
     ):
-        super(GatedGCNConv, self).__init__()
+        super().__init__()
         self.graph_norm = graph_norm
         self.batch_norm = batch_norm
         self.activation = activation
@@ -132,7 +132,6 @@ class GatedGCNConv(nn.Module):
             updated node features.
         """
         g = g.to('cuda:0')
-        #print(g.device)
         g = g.local_var()
 
         h = feats["atom"]
