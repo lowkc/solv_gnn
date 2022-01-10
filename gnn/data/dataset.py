@@ -636,7 +636,16 @@ class SolvationDataset():
         # Get molecules, labels, atom types, and extra features
         molecules = self.get_molecules(self.molecules)
         raw_labels = self.get_labels(self.raw_labels)
-        species = get_dataset_species(molecules)
+        
+        if self.state_dict_filename is not None:
+            logger.info(f"Load dataset state dict from: {self.state_dict_filename}")
+            state_dict = torch.load(str(self.state_dict_filename))
+            self.load_state_dict(state_dict)
+            species = self.state_dict()["species"]
+            assert species is not None, "Corrupted state_dict file, `species` not found"
+        else:
+            species = get_dataset_species(molecules)
+            self._species = species
 
         if self.solute_extra_features is not None:
             solute_features = self.get_features(self.solute_extra_features)
@@ -679,16 +688,6 @@ class SolvationDataset():
         self._solute_feature_size = self.solute_grapher.feature_size
         self._solvent_feature_name = self.solvent_grapher.feature_name
         self._solvent_feature_size = self.solvent_grapher.feature_size
-        
-        if self.state_dict_filename is not None:
-            logger.info(f"Load dataset state dict from: {self.state_dict_filename}")
-            state_dict = torch.load(str(self.state_dict_filename))
-            self.load_state_dict(state_dict)
-            species = self.state_dict()["species"]
-            assert species is not None, "Corrupted state_dict file, `species` not found"
-        else:
-            species = get_dataset_species(molecules)
-            self._species = species
 
         logger.info("Solute feature names: {}".format(self.feature_names[0]))
         logger.info("Solute feature size: {}".format(self.feature_sizes[0]))
