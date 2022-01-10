@@ -276,6 +276,7 @@ class AttentionGCN(nn.Module):
         
         self.solvent_W_a = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1])
         self.solvent_W_b = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1]) 
+        
         self.W_activation = fc_activation
 
         self.readout_layer = Set2SetThenCat(
