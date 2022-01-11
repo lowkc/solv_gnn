@@ -1,5 +1,4 @@
 import logging
-import pickle
 import sys, os
 import time
 import warnings
@@ -9,20 +8,20 @@ from pathlib import Path
 import numpy as np
 from datetime import datetime
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.nn import MSELoss
+from torch.nn import MSELoss, L1Loss
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.serialization import save
-from gnn.model.metric import WeightedL1Loss, EarlyStopping
-from gnn.model.gated_solv_network import GatedGCNSolvationNetwork
-from gnn.data.dataset import SolvationDataset, train_validation_test_split
+from gnn.model.metric import EarlyStopping
+from gnn.model.gated_solv_network import GatedGCNSolvationNetwork, InteractionMap, SelfInteractionMap
+from gnn.data.dataset import SolvationDataset, train_validation_test_split, solvent_split, element_split, substructure_split
 from gnn.data.dataloader import DataLoaderSolvation
 from gnn.data.grapher import HeteroMoleculeGraph
 from gnn.data.featurizer import (
-    AtomFeaturizerFull,
+    SolventAtomFeaturizer,
     BondAsNodeFeaturizerFull,
-    GlobalFeaturizer,
+    SolventGlobalFeaturizer,
 )
 from gnn.data.dataset import load_mols_labels
 from gnn.utils import (
@@ -32,32 +31,41 @@ from gnn.utils import (
     pickle_dump,
     yaml_dump,
 )
+from sklearn.metrics import mean_squared_error
 
-best = np.finfo(np.float32).max
 
 def parse_args():
     parser = argparse.ArgumentParser(description="GatedSolvationNetwork")
 
     # input files
     parser.add_argument('--dataset-file', type=str, default=None)
+    parser.add_argument('--dielectric-constants', type=str, default=None)
+    parser.add_argument('--molecular-volume', type=bool, default=False)
+    parser.add_argument('--molecular-refractivity', type=bool, default=False)
 
     # output dir
     parser.add_argument('--save-dir', type=str, default=None)
 
+    # training params
     parser.add_argument('--random-seed', type=int, default=0)
+    parser.add_argument('--feature-scaling', type=bool, default=True)
+    parser.add_argument('--solvent-split', type=str, default=None)
+    parser.add_argument('--element-split', type=str, default=None)
+    parser.add_argument('--scaffold-split', type=str, default=False)
+    parser.add_argument('--attention-map', type=str, default=False)
 
     # embedding layer
     parser.add_argument("--embedding-size", type=int, default=24)
 
     # gated layer
     parser.add_argument("--gated-num-layers", type=int, default=3)
-    parser.add_argument("--gated-hidden-size", type=int, nargs="+", default=[64, 64, 64])
+    parser.add_argument("--gated-hidden-size", type=int, nargs="+", default=[192, 192, 192])
     parser.add_argument("--gated-num-fc-layers", type=int, default=2)
-    parser.add_argument("--gated-graph-norm", type=int, default=0)
+    parser.add_argument("--gated-graph-norm", type=int, default=1)
     parser.add_argument("--gated-batch-norm", type=int, default=1)
-    parser.add_argument("--gated-activation", type=str, default="ReLU")
+    parser.add_argument("--gated-activation", type=str, default="LeakyReLU")
     parser.add_argument("--gated-residual", type=int, default=1)
-    parser.add_argument("--gated-dropout", type=float, default="0.0")
+    parser.add_argument("--gated-dropout", type=float, default="0.4")
 
     # readout layer
     parser.add_argument(
@@ -77,8 +85,8 @@ def parse_args():
     parser.add_argument("--fc-num-layers", type=int, default=2)
     parser.add_argument("--fc-hidden-size", type=int, nargs="+", default=[64, 32])
     parser.add_argument("--fc-batch-norm", type=int, default=0)
-    parser.add_argument("--fc-activation", type=str, default="ReLU")
-    parser.add_argument("--fc-dropout", type=float, default=0.0)
+    parser.add_argument("--fc-activation", type=str, default="LeakyReLU")
+    parser.add_argument("--fc-dropout", type=float, default=0.2)
 
     # training
     parser.add_argument("--start-epoch", type=int, default=0)
@@ -155,12 +163,11 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
         solute_feats = {nt: solute_batched_graph.nodes[nt].data["feat"] for nt in nodes}
         solvent_feats = {nt: solvent_batched_graph.nodes[nt].data["feat"] for nt in nodes}
         target = torch.squeeze(label["value"])
-        stdev = label["scaler_stdev"]
         solute_norm_atom = label["solute_norm_atom"]
         solute_norm_bond = label["solute_norm_bond"]
         solvent_norm_atom = label["solvent_norm_atom"]
         solvent_norm_bond = label["solvent_norm_bond"]
-        stdev = label["scaler_stdev"]
+        #stdev = label["scaler_stdev"]
 
         if device is not None:
             solute_feats = {k: v.to(device) for k, v in solute_feats.items()}
@@ -170,7 +177,7 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
             solute_norm_bond = solute_norm_bond.to(device)
             solvent_norm_atom = solvent_norm_atom.to(device)
             solvent_norm_bond = solvent_norm_bond.to(device)
-            stdev = stdev.to(device)
+            #stdev = stdev.to(device)
         
         pred = model(solute_batched_graph, solvent_batched_graph, solute_feats, 
                      solvent_feats, solute_norm_atom, solute_norm_bond, 
@@ -183,7 +190,7 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
         optimizer.step()
 
         epoch_loss += loss.detach().item()
-        accuracy += metric_fn(pred, target, stdev).detach().item()
+        accuracy += metric_fn(pred, target).detach().item()
         count += len(target)
     
     epoch_loss /= it + 1
@@ -191,7 +198,7 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
 
     return epoch_loss, accuracy
 
-def evaluate(model, nodes, data_loader, metric_fn, device=None, verbose=False):
+def evaluate(model, nodes, data_loader, metric_fn, scaler = None, device=None, return_preds=False):
     """
     Evaluate the accuracy of an validation set of test set.
     Args:
@@ -204,11 +211,14 @@ def evaluate(model, nodes, data_loader, metric_fn, device=None, verbose=False):
         accuracy = 0.0
         count = 0.0
 
+        preds = []
+        y_true = []
+
         for solute_batched_graph, solvent_batched_graph, label in data_loader:
             solute_feats = {nt: solute_batched_graph.nodes[nt].data["feat"] for nt in nodes}
             solvent_feats = {nt: solvent_batched_graph.nodes[nt].data["feat"] for nt in nodes}
             target = torch.squeeze(label["value"])
-            stdev = label["scaler_stdev"]
+            #stdev = label["scaler_stdev"]
             solvent_norm_atom = label["solvent_norm_atom"]
             solvent_norm_bond = label["solvent_norm_bond"]
             solute_norm_atom = label["solute_norm_atom"]
@@ -222,33 +232,48 @@ def evaluate(model, nodes, data_loader, metric_fn, device=None, verbose=False):
                 solute_norm_bond = solute_norm_bond.to(device)
                 solvent_norm_atom = solvent_norm_atom.to(device)
                 solvent_norm_bond = solvent_norm_bond.to(device)
-                stdev = stdev.to(device)
+                #stdev = stdev.to(device)
 
             pred = model(solute_batched_graph, solvent_batched_graph, solute_feats, 
                      solvent_feats, solute_norm_atom, solute_norm_bond, 
                      solvent_norm_atom, solvent_norm_bond)
             pred = pred.view(-1)
 
-            accuracy += metric_fn(pred, target, stdev).detach().item()
-            count += len(target)
+            # Inverse scale 
+            if scaler is not None:
+                pred = scaler.inverse_transform(pred.cpu())
+                pred = pred.to(device)
 
-    if verbose:
-        return accuracy / count, target, pred
+            accuracy += metric_fn(pred, target).detach().item()
+            count += len(target)
+            
+            batch_pred = pred.tolist()
+            batch_target = target.tolist()
+            preds.extend(batch_pred)
+            y_true.extend(batch_target)
+
+    if return_preds:
+        return y_true, preds
 
     else:
         return accuracy / count
 
-def get_grapher():
-    atom_featurizer = AtomFeaturizerFull()
+def grapher(dielectric_constant=None, mol_volume=False, mol_refract=False):
+    atom_featurizer = SolventAtomFeaturizer()
     bond_featurizer = BondAsNodeFeaturizerFull(length_featurizer=None, dative=False)
-    global_featurizer = GlobalFeaturizer(allowed_charges=None)
+    global_featurizer = SolventGlobalFeaturizer(dielectric_constant=dielectric_constant, mol_volume=mol_volume, mol_refract=mol_refract)
 
     grapher = HeteroMoleculeGraph(atom_featurizer, bond_featurizer, global_featurizer, self_loop=True)
 
     return grapher
 
 def main_worker(gpu, world_size, args):
-    global best
+    
+    # Explicitly setting seed to ensure the same dataset split and models created in
+    # two processes (when distributed) start from the same random weights and biases
+    random_seed = args.random_seed
+    seed_torch(random_seed)
+
     args.gpu = gpu
 
     if not args.distributed or (args.distributed and args.gpu == 0):
@@ -265,10 +290,6 @@ def main_worker(gpu, world_size, args):
             rank = args.gpu
         )
     
-    # Explicitly setting seed to ensure the same dataset split and models created in
-    # two processes (when distributed) start from the same random weights and biases
-    seed_torch()
-
     if args.restore:
         dataset_state_dict_filename = args.dataset_state_dict_filename
 
@@ -286,20 +307,68 @@ def main_worker(gpu, world_size, args):
     # Load molecules and labels from file
     mols, labels = load_mols_labels(args.dataset_file)
 
-    dataset = SolvationDataset(
-        grapher = get_grapher(),
-        molecules = mols,
-        labels = labels,
-        extra_features = None,
-        feature_transformer = True,
-        label_transformer= True,
-        state_dict_filename=dataset_state_dict_filename
-        )
+    if args.dielectric_constants is not None:
+        dc_file = Path(args.dielectric_constants)        
+        dataset = SolvationDataset(
+            solute_grapher = grapher(mol_volume = args.molecular_volume,
+                                    mol_refract = args.molecular_refractivity),
+            solvent_grapher = grapher(dielectric_constant=True,
+                                     mol_volume = args.molecular_volume,
+                                     mol_refract = args.molecular_refractivity),
+            molecules = mols,
+            labels = labels,
+            solute_extra_features = None,
+            solvent_extra_features=dc_file,
+            feature_transformer = False,
+            label_transformer= False,
+            state_dict_filename=dataset_state_dict_filename)
 
-    trainset, valset, testset = train_validation_test_split(
-        dataset, validation=0.1, test=0.1, random_seed=args.random_seed,
-    )
+    else:
+        dataset = SolvationDataset(
+            solute_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity),
+            solvent_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity),
+            molecules = mols,
+            labels = labels,
+            solute_extra_features = None,
+            solvent_extra_features = None,
+            feature_transformer = False,
+            label_transformer= False,
+            state_dict_filename=dataset_state_dict_filename
+            )
 
+    # Save the solute and solvent graphers for loading datasets later
+    pickle_dump([dataset.solute_grapher, dataset.solvent_grapher], os.path.join(args.save_dir,"graphers.pkl"))
+
+    best = np.finfo(np.float32).max
+    os.makedirs(args.save_dir, exist_ok=True)
+    
+    if (args.solvent_split is None) and (args.element_split is None) and (args.scaffold_split is False):
+        print(f'Splitting data using random seed {random_seed}')
+        trainset, valset, testset = train_validation_test_split(
+            dataset, validation=0.1, test=0.1, random_seed=args.random_seed)
+    elif args.solvent_split is not None:
+        possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
+               'dichloromethane', 'acetonitrile', 'thf', 'dmso']
+        assert args.solvent_split in possible_solvents, "Solvent unavailable!"
+        print(f'Using compounds with {args.solvent_split} solvent as test data.')
+        trainset, valset, testset = solvent_split(
+            dataset, args.solvent_split, random_seed=args.random_seed)
+    elif args.scaffold_split is True:
+        trainset, valset, testset = substructure_split(
+            dataset, args.solvent_split, random_seed=args.random_seed)
+    else: # element split
+        elem = args.element_split
+        trainset, valset, testset = element_split(dataset, elem, random_seed=args.random_seed)
+
+    # Scale training dataset features
+    if args.feature_scaling:
+        solute_features_scaler, solvent_features_scaler = trainset.normalize_features()
+        valset.normalize_features(solute_features_scaler, solvent_features_scaler)
+        testset.normalize_features(solute_features_scaler, solvent_features_scaler)
+    else:
+        solute_features_scaler, solvent_features_scaler = None, None
+    
+    label_scaler = trainset.normalize_labels()
     if not args.distributed or (args.distributed and args.gpu == 0):
         torch.save(dataset.state_dict(), os.path.join(args.save_dir, args.dataset_state_dict_filename))
         print(
@@ -307,7 +376,6 @@ def main_worker(gpu, world_size, args):
                 len(trainset), len(valset), len(testset)
             )
         )
-
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(trainset)
     else:
@@ -319,78 +387,120 @@ def main_worker(gpu, world_size, args):
         shuffle = (train_sampler is None),
         sampler = train_sampler
     )
-
     # larger val and test set batch_size is faster but needs more memory
     # adjust the batch size of val and test set to fit memory
     bs = max(len(valset) // 10, 1)
     val_loader = DataLoaderSolvation(valset, batch_size=bs, shuffle=False)
     bs = max(len(testset) // 10, 1)
     test_loader = DataLoaderSolvation(testset, batch_size=bs, shuffle=False)
-
     ### model
     feature_names = ["atom", "bond", "global"]
     set2set_ntypes_direct = ["global"]
-    feature_size = dataset.feature_size
-
-    args.feature_size = feature_size
+    solute_feature_size = dataset.feature_sizes[0]
+    solvent_feature_size = dataset.feature_sizes[1]
+    args.solute_feature_size = solute_feature_size
+    args.solvent_feature_size = solvent_feature_size
     args.set2set_ntypes_direct = set2set_ntypes_direct
-
     # save args
     if not args.distributed or (args.distributed and args.gpu == 0):
         yaml_dump(args, os.path.join(args.save_dir, "train_args.yaml"))
-
-    model = GatedGCNSolvationNetwork(
-        in_feats=args.feature_size,
-        embedding_size=args.embedding_size,
-        gated_num_layers=args.gated_num_layers,
-        gated_hidden_size=args.gated_hidden_size,
-        gated_num_fc_layers=args.gated_num_fc_layers,
-        gated_graph_norm=args.gated_graph_norm,
-        gated_batch_norm=args.gated_batch_norm,
-        gated_activation=args.gated_activation,
-        gated_residual=args.gated_residual,
-        gated_dropout=args.gated_dropout,
-        num_lstm_iters=args.num_lstm_iters,
-        num_lstm_layers=args.num_lstm_layers,
-        set2set_ntypes_direct=args.set2set_ntypes_direct,
-        fc_num_layers=args.fc_num_layers,
-        fc_hidden_size=args.fc_hidden_size,
-        fc_batch_norm=args.fc_batch_norm,
-        fc_activation=args.fc_activation,
-        fc_dropout=args.fc_dropout,
-        outdim=1,
-        conv="GatedGCNConv",
-    )
-
-    if not args.distributed or (args.distributed and args.gpu == 0):
-        print(model)
-
+    if args.attention_map == 'cross':
+        print("Cross interaction map")
+        model = InteractionMap(
+            solute_in_feats=args.solute_feature_size,
+            solvent_in_feats=args.solvent_feature_size,
+            embedding_size=args.embedding_size,
+            gated_num_layers=args.gated_num_layers,
+            gated_hidden_size=args.gated_hidden_size,
+            gated_num_fc_layers=args.gated_num_fc_layers,
+            gated_graph_norm=args.gated_graph_norm,
+            gated_batch_norm=args.gated_batch_norm,
+            gated_activation=args.gated_activation,
+            gated_residual=args.gated_residual,
+            gated_dropout=args.gated_dropout,
+            num_lstm_iters=args.num_lstm_iters,
+            num_lstm_layers=args.num_lstm_layers,
+            set2set_ntypes_direct=args.set2set_ntypes_direct,
+            fc_num_layers=args.fc_num_layers,
+            fc_hidden_size=args.fc_hidden_size,
+            fc_batch_norm=args.fc_batch_norm,
+            fc_activation=args.fc_activation,
+            fc_dropout=args.fc_dropout,
+            outdim=1,
+            conv="GatedGCNConv",
+        )
+    elif args.attention_map == 'self':
+        print("Self interaction map")
+        model = SelfInteractionMap(
+            solute_in_feats=args.solute_feature_size,
+            solvent_in_feats=args.solvent_feature_size,
+            embedding_size=args.embedding_size,
+            gated_num_layers=args.gated_num_layers,
+            gated_hidden_size=args.gated_hidden_size,
+            gated_num_fc_layers=args.gated_num_fc_layers,
+            gated_graph_norm=args.gated_graph_norm,
+            gated_batch_norm=args.gated_batch_norm,
+            gated_activation=args.gated_activation,
+            gated_residual=args.gated_residual,
+            gated_dropout=args.gated_dropout,
+            num_lstm_iters=args.num_lstm_iters,
+            num_lstm_layers=args.num_lstm_layers,
+            set2set_ntypes_direct=args.set2set_ntypes_direct,
+            fc_num_layers=args.fc_num_layers,
+            fc_hidden_size=args.fc_hidden_size,
+            fc_batch_norm=args.fc_batch_norm,
+            fc_activation=args.fc_activation,
+            fc_dropout=args.fc_dropout,
+            outdim=1,
+            conv="GatedGCNConv",
+        )
+    else:
+        model = GatedGCNSolvationNetwork(
+            solute_in_feats=args.solute_feature_size,
+            solvent_in_feats=args.solvent_feature_size,
+            embedding_size=args.embedding_size,
+            gated_num_layers=args.gated_num_layers,
+            gated_hidden_size=args.gated_hidden_size,
+            gated_num_fc_layers=args.gated_num_fc_layers,
+            gated_graph_norm=args.gated_graph_norm,
+            gated_batch_norm=args.gated_batch_norm,
+            gated_activation=args.gated_activation,
+            gated_residual=args.gated_residual,
+            gated_dropout=args.gated_dropout,
+            num_lstm_iters=args.num_lstm_iters,
+            num_lstm_layers=args.num_lstm_layers,
+            set2set_ntypes_direct=args.set2set_ntypes_direct,
+            fc_num_layers=args.fc_num_layers,
+            fc_hidden_size=args.fc_hidden_size,
+            fc_batch_norm=args.fc_batch_norm,
+            fc_activation=args.fc_activation,
+            fc_dropout=args.fc_dropout,
+            outdim=1,
+            conv="GatedGCNConv",
+        )
+    # if not args.distributed or (args.distributed and args.gpu == 0):
+    #     print(model)
     if args.gpu is not None:
         model.to(args.gpu)
     if args.distributed:
         ddp_model = DDP(model, device_ids=[args.gpu])
         ddp_model.feature_before_fc = model.feature_before_fc
         model = ddp_model
-
     ### optimizer, loss, and metric
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
-
     loss_func = MSELoss(reduction="mean")
-    metric = WeightedL1Loss(reduction="sum")
-
+    metric = L1Loss(reduction="sum")
     ### learning rate scheduler and stopper
     scheduler = ReduceLROnPlateau(
         optimizer, mode="min", factor=0.4, patience=50, verbose=True
     )
     stopper = EarlyStopping(patience=150)
-
     # load checkpoint
     state_dict_objs = {"model": model, "optimizer": optimizer, "scheduler": scheduler}
     if args.restore:
         try:
-
             if args.gpu is None:
                 checkpoint = load_checkpoints(state_dict_objs, save_dir=args.save_dir, filename="checkpoint.pkl")
             else:
@@ -399,67 +509,62 @@ def main_worker(gpu, world_size, args):
                 checkpoint = load_checkpoints(
                     state_dict_objs, map_location=loc, save_dir=args.save_dir, filename="checkpoint.pkl"
                 )
-
             args.start_epoch = checkpoint["epoch"]
             best = checkpoint["best"]
             print(f"Successfully load checkpoints, best {best}, epoch {args.start_epoch}")
-
         except FileNotFoundError as e:
             warnings.warn(str(e) + " Continue without loading checkpoints.")
             pass
-
     # start training
     if not args.distributed or (args.distributed and args.gpu == 0):
         print("\n\n# Epoch     Loss         TrainAcc        ValAcc     Time (s)")
         sys.stdout.flush()
-
     for epoch in range(args.start_epoch, args.epochs):
         ti = time.time()
-
         # In distributed mode, calling the set_epoch method is needed to make shuffling
         # work; each process will use the same random seed otherwise.
         if args.distributed:
             train_sampler.set_epoch(epoch)
-
         # train
         loss, train_acc = train(
-            optimizer, model, feature_names, train_loader, loss_func, metric, args.gpu
-        )
-
+            optimizer, model, feature_names, train_loader, loss_func, metric, args.gpu)
         # bad, we get nan
         if np.isnan(loss):
-            print("\n\nBad, we get nan for loss. Existing")
+            print("\n\nBad, we get nan for loss. Exiting")
             sys.stdout.flush()
             sys.exit(1)
-
         # evaluate
-        val_acc = evaluate(model, feature_names, val_loader, metric, args.gpu)
-
+        val_acc = evaluate(model, feature_names, val_loader, metric, label_scaler, args.gpu)
         if stopper.step(val_acc):
             pickle_dump(best, os.path.join(args.save_dir, args.output_file))  # save results for hyperparam tune
             break
-
         scheduler.step(val_acc)
-
         is_best = val_acc < best
         if is_best:
             best = val_acc
-
         # save checkpoint
         if not args.distributed or (args.distributed and args.gpu == 0):
-
             misc_objs = {"best": best, "epoch": epoch}
-
+            scaler_objs = {'label_scaler': {
+                            'means': label_scaler.mean,
+                            'stds': label_scaler.std
+                            } if label_scaler is not None else None,
+                            'solute_features_scaler': {
+                            'means': solute_features_scaler.mean,
+                            'stds': solute_features_scaler.std
+                            } if solute_features_scaler is not None else None,
+                            'solvent_features_scaler': {
+                            'means': solvent_features_scaler.mean,
+                            'stds': solvent_features_scaler.std
+                            } if solvent_features_scaler is not None else None}
             save_checkpoints(
                 state_dict_objs,
                 misc_objs,
+                scaler_objs,
                 is_best,
                 msg=f"epoch: {epoch}, score {val_acc}",
-                save_dir=args.save_dir
-            )
-
+                save_dir=args.save_dir)
             tt = time.time() - ti
-
             print(
                 "{:5d}   {:12.6e}   {:12.6e}   {:12.6e}   {:.2f}".format(
                     epoch, loss, train_acc, val_acc, tt
@@ -467,7 +572,6 @@ def main_worker(gpu, world_size, args):
             )
             if epoch % 10 == 0:
                 sys.stdout.flush()
-
     # load best to calculate test accuracy
     if args.gpu is None:
         checkpoint = load_checkpoints(state_dict_objs, args.save_dir, filename="best_checkpoint.pkl")
@@ -477,15 +581,16 @@ def main_worker(gpu, world_size, args):
         checkpoint = load_checkpoints(
             state_dict_objs, map_location=loc, save_dir=args.save_dir, filename="best_checkpoint.pkl"
         )
-
     if not args.distributed or (args.distributed and args.gpu == 0):
-        test_acc, y_true, y_pred = evaluate(model, feature_names, test_loader, metric, args.gpu, verbose=True)
-
-        results_dict = {'y_true': y_true, 'y_pred': y_pred}
-
-        print("\n#TestAcc: {:12.6e} \n".format(test_acc))
+        test_acc = evaluate(model, feature_names, test_loader, metric, label_scaler, args.gpu)
+        y_true, y_pred = evaluate(model, feature_names, test_loader, metric, 
+                                    label_scaler, args.gpu, return_preds=True)
+        
+        print("\n#Test MAE: {:12.6e} \n".format(test_acc))
+        print("\n#Test RMSE: {:12.6e} \n".format(mean_squared_error(y_true, y_pred, squared=False)))
         print("\nFinish training at:", datetime.now())
-        pickle_dump(results_dict, os.path.join(args.save_dir, 'test_results.pkl'))
+        results_dict = {'y_true': y_true, 'y_pred': y_pred}
+        pickle_dump(results_dict, os.path.join(args.save_dir, f'seed_{random_seed}_test_results.pkl'))
 
 
 def main():
@@ -495,23 +600,12 @@ def main():
     if args.save_dir is not None:
         os.makedirs(args.save_dir, exist_ok=True)
 
-    args = parse_args()
     logging.basicConfig(
     filename=os.path.join(args.save_dir, '{}.log'.format(
         datetime.now().strftime("gnn_%Y_%m_%d-%I_%M_%p"))),
     format="%(asctime)s:%(name)s:%(levelname)s: %(message)s",
     level=logging.INFO,
     )
-
-    # logger = logging.getLogger(__name__)
-    # logger.setLevel(logging.INFO)
-    # for handler in logger.handlers:
-    #     logger.removeHandler(handler)
-
-    # fh = logging.FileHandler(os.path.join(args.save_dir, 'gnn.log'))
-    # formatter = logging.Formatter("%(asctime)s:%(name)s:%(levelname)s: %(message)s")
-    # fh.setFormatter(formatter)
-    # logger.addHandler(fh)
 
     if args.distributed:
         # DDP

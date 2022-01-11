@@ -584,7 +584,7 @@ class SolventGlobalFeaturizer(BaseFeaturizer):
 
             if self.mol_refract:
                 _, mr = AllChem.CalcCrippenDescriptors(mol)
-                g += mr
+                g += [mr]
 
         feats = torch.tensor([g], dtype=getattr(torch, self.dtype))
 
