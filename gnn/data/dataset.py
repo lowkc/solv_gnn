@@ -6,6 +6,9 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from rdkit import Chem
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import BRICS
+from collections import defaultdict
 from gnn.data.transformers import HeteroGraphFeatureStandardScaler, StandardScaler
 from gnn.utils import to_path, list_split_by_size
 
@@ -936,3 +939,145 @@ def train_validation_test_split(dataset, validation=0.1, test=0.1, random_seed=0
         Subset(dataset, val_idx),
         Subset(dataset, test_idx),
           ]
+
+def solvent_split(dataset, target_solvent, random_seed):
+    """
+    Split the dataset such that the named solvent is removed from the training and validation set, 
+    and present in the test set only.
+    """ 
+    if target_solvent == "hexane":
+        inchi = 'InChI=1S/C6H14/c1-3-5-6-4-2/h3-6H2,1-2H3'
+    elif target_solvent == "water":
+        inchi = 'InChI=1S/H2O/h1H2'
+    elif target_solvent == "acetone":
+        inchi = 'InChI=1S/C3H6O/c1-3(2)4/h1-2H3'
+    elif target_solvent == "ethanol":
+        inchi = 'InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3'
+    elif target_solvent == "benzene":
+        inchi = 'InChI=1S/C6H6/c1-2-4-6-5-3-1/h1-6H'
+    elif target_solvent == "ethylacetate":
+        inchi = 'InChI=1S/C4H8O2/c1-3-6-4(2)5/h3H2,1-2H3'
+    elif target_solvent == "dichloromethane":
+        inchi = 'InChI=1S/CH2Cl2/c2-1-3/h1H2'
+    elif target_solvent == "acetonitrile":
+        inchi = 'InChI=1S/C2H3N/c1-2-3/h1H3'
+    elif target_solvent == "thf":
+        inchi = 'InChI=1S/C4H8O/c1-2-4-5-3-1/h1-4H2'
+    elif target_solvent == "dmso":
+        inchi = 'InChI=1S/C2H6OS/c1-4(2)3/h1-2H3'
+    else:
+        raise ValueError("Solvent not found!")
+
+    test_idx = []
+    
+    for i, mol in enumerate(dataset.molecules):
+        solvent = mol[1]
+        if check_if_same_mol(Chem.MolFromInchi(inchi), solvent):
+            test_idx.append(i)
+    
+    size = len(dataset)
+    num_test = len(test_idx)
+    num_train_val = size - len(test_idx)
+    num_train = int(num_train_val * 0.9)
+    num_val = size - num_train - num_test
+    assert num_val + num_test + num_train == size, "validation + train + test > 1"
+
+    np.random.seed(random_seed)
+    remaining_ind = np.setdiff1d(np.arange(size), test_idx)
+    np.random.shuffle(remaining_ind)
+    train_idx = remaining_ind[:num_train]
+    val_idx  = remaining_ind[num_train:]
+
+    # Validation set will be 10% of the training set
+    
+    logger.info("Excluding {} from training/val dataset: {} test compounds".format(target_solvent, num_test))
+    logger.info("Training set: {} compounds. Validation set: {} compounds".format(num_train, num_val))
+
+    return [
+        Subset(dataset, train_idx),
+        Subset(dataset, val_idx),
+        Subset(dataset, test_idx),
+          ]
+
+
+def check_if_same_mol(mol1, mol2):
+    return Chem.MolToInchi(mol1) == Chem.MolToInchi(mol2)
+
+def substructure_split(dataset, scaffolds = ['c1ccccc1C(=O)[O&H1]', 'C#[C&H1]', 'C[C&H2]Cl', 'C1=CCCC1', 'c1ccc2c(-,:c1)ccc1ccccc12',
+           'C1COCCN1', 'NS(=O)(=O)C', 'c1ccccc1[N&+](=O)[O&-]'], random_seed=None):
+    '''
+    Split a dataset by scaffolds so that molecules with the supplied scaffold (SMARTS) are in the test set.
+    Scaffold SMARTS and structures from: https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/61d33656d6dcc267874e59e0/original/group-contribution-and-machine-learning-approaches-to-predict-abraham-solute-parameters-solvation-free-energy-and-solvation-enthalpy.pdf
+    '''
+   
+    train_idx, val_idx, test_idx = [], [], []
+    solutes = [m[0] for m in dataset.molecules]
+    
+    for patt in scaffolds:
+        scaffold = Chem.MolFromSmarts(patt)
+        for i, mol in enumerate(solutes):
+            if mol.HasSubstructMatch(scaffold):
+                test_idx.append(i)
+        
+    size = len(dataset)
+    num_test = len(test_idx)
+    num_train_val = size - len(test_idx)
+    num_train = int(num_train_val * 0.9)
+    num_val = size - num_train - num_test
+    assert num_val + num_test + num_train == size, "validation + train + test > 1"
+    
+    np.random.seed(random_seed)
+    remaining_ind = np.setdiff1d(np.arange(size), test_idx)
+    np.random.shuffle(remaining_ind)
+    train_idx = remaining_ind[:num_train]
+    val_idx  = remaining_ind[num_train:]
+
+    # Validation set will be 10% of the training set
+    
+    logger.info("Excluding {} substructures from training/val dataset: {} test compounds".format(len(scaffolds), num_test))
+    logger.info("Training set: {} compounds. Validation set: {} compounds".format(num_train, num_val))
+
+    return [
+        Subset(dataset, train_idx),
+        Subset(dataset, val_idx),
+        Subset(dataset, test_idx),
+          ]
+
+def element_split(dataset, element, random_seed=None):
+    """
+    Split the dataset such that solutes containing the chosen element is removed from the training and validation set, 
+    and present in the test set only.
+    """ 
+    train_idx, val_idx, test_idx = [], [], []
+    solutes = [m[0] for m in dataset.molecules]
+    pattern = Chem.MolFromSmarts(element)
+
+    
+    for i, mol in enumerate(solutes):
+        if mol.HasSubstructMatch(pattern):
+            test_idx.append(i)
+
+    size = len(dataset)
+    num_test = len(test_idx)
+    num_train_val = size - len(test_idx)
+    num_train = int(num_train_val * 0.9)
+    num_val = size - num_train - num_test
+    assert num_val + num_test + num_train == size, "validation + train + test > 1"
+    
+    np.random.seed(random_seed)
+    remaining_ind = np.setdiff1d(np.arange(size), test_idx)
+    np.random.shuffle(remaining_ind)
+    train_idx = remaining_ind[:num_train]
+    val_idx  = remaining_ind[num_train:]
+
+    # Validation set will be 10% of the training set
+    
+    logger.info("Excluding solutes containing {} from training/val dataset: {} test compounds".format(element, num_test))
+    logger.info("Training set: {} compounds. Validation set: {} compounds".format(num_train, num_val))
+
+    return [
+        Subset(dataset, train_idx),
+        Subset(dataset, val_idx),
+        Subset(dataset, test_idx),
+          ]
+    
