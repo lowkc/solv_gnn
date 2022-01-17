@@ -1,16 +1,12 @@
-from statistics import mean
 import sys, os
 import time
 import warnings
 import argparse
 from pathlib import Path
-import numpy as np
-from datetime import datetime
 import pandas as pd
+from rdkit import Chem
 
 from gnn.prediction.prediction import predict_from_file
-from gnn.data.grapher import HeteroMoleculeGraph
-
 from gnn.data.dataset import load_mols_labels
 from gnn.utils import (
     load_checkpoints,
@@ -42,16 +38,18 @@ def parse_args():
 
 
 def main():
-    args = parse_args
+    args = parse_args()
+    if args.model_path == None or args.dataset_file == None:
+        raise ValueError('Please provide the paths to the saved model file and .csv of SMILES strings.')
 
     if args.dielectric_constants is not None:
         dc_file = Path(args.dielectric_constants)      
+    else:
+        dc_file = None
 
-    model_path = Path(args.model_path)
-    dataset_file = Path(args.dataset_file)
     
-    pred_vals, true_vals = predict_from_file(model_path=model_path,
-                  dataset_file=dataset_file,
+    pred_vals, true_vals = predict_from_file(model_path=args.model_path,
+                  dataset_file=args.dataset_file,
                   solvent_extra_features=dc_file,
                   device=args.gpu)
     
@@ -61,6 +59,8 @@ def main():
     mae = mean_absolute_error(true_vals, pred_vals)
     rmse = mean_squared_error(true_vals, pred_vals, squared=False)
 
-    print("\n#Test MAE: {:12.6e} \n".format(mae))
-    print("\n#Test RMSE: {:12.6e} \n".format(rmse))
+    print("Test MAE: {:12.6e} \n".format(mae))
+    print("Test RMSE: {:12.6e} \n".format(rmse))
 
+if __name__ == "__main__":
+    main()

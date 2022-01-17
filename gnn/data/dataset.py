@@ -664,7 +664,7 @@ class SolvationDataset():
         self.labels = []
 
         for i, (mol, solu_feats, solv_feats, lb) in enumerate(zip(molecules, solute_features, solvent_features, raw_labels)):
-            if i % 100 == 0:
+            if i % 500 == 0:
                 logger.info("Processing molecule {}/{}".format(i, len(raw_labels)))
             
             if mol is not None:
@@ -883,7 +883,6 @@ class Subset(SolvationDataset):
 
 
 def load_mols_labels(file):
-
     df = pd.read_csv(file, skipinitialspace=True, usecols=['DeltaGsolv'], index_col=None)
     labels = np.asarray(df)
 
@@ -1080,4 +1079,5 @@ def element_split(dataset, element, random_seed=None):
         Subset(dataset, val_idx),
         Subset(dataset, test_idx),
           ]
+
     
