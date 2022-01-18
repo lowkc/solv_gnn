@@ -109,26 +109,7 @@ class InteractionMap(AttentionGCN):
         updated_solvent_atom_fts = []
 
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
-            # Effect of the solvent on the solute
-            # solute_fts_att_w  = torch.matmul(self.solute_W_a(solute_ft), solvent_ft.t()) 
-            # solute_fts_att_w = torch.nn.functional.softmax(solute_fts_att_w, dim=0)
-            
-            # solvent_fts_att_w  = torch.matmul(self.solvent_W_a(solvent_ft), solute_ft.t()) 
-            # solvent_fts_att_w = torch.nn.functional.softmax(solvent_fts_att_w, dim=0)
-
-            # solute_attn_hiddens = torch.matmul(solute_fts_att_w, solvent_ft)
-            # solute_attn_hiddens = self.W_activation(self.solute_W_b(solute_attn_hiddens))
-
-            # solvent_attn_hiddens = torch.matmul(solvent_fts_att_w, solute_ft) 
-            # solvent_attn_hiddens = self.W_activation(self.solvent_W_b(solvent_attn_hiddens))
-
-            # new_solute_feats = solute_ft + solute_attn_hiddens
-            # new_solvent_feats = solvent_ft + solvent_attn_hiddens
-
-            # updated_solute_atom_fts.append(new_solute_feats)
-            # updated_solvent_atom_fts.append(new_solvent_feats)
-
-            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) # 14 * 64
+            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) # 14 * 64, 14 = natoms
             pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.1) # 6 * 64 
             pairwise_pred = torch.sigmoid(torch.matmul(
                 pairwise_solute_feature, pairwise_solvent_feature.t())) # 14 * 6
@@ -137,6 +118,9 @@ class InteractionMap(AttentionGCN):
             new_solvent_feats = torch.matmul(pairwise_pred.t(), pairwise_solute_feature) # 6*14, 14*64 = 6*64
             new_solute_feats = torch.matmul(pairwise_pred, pairwise_solvent_feature) # 14*6, 6*64 = 14*64
 
+            # TEST: add the old solute_ft to the new one to get a represetnation of both inter- and intra-molecular interactions.
+            new_solute_feats += solute_ft
+            new_solvent_feats += solvent_ft
             updated_solute_atom_fts.append(new_solute_feats)
             updated_solvent_atom_fts.append(new_solvent_feats)
 
@@ -145,13 +129,13 @@ class InteractionMap(AttentionGCN):
 
         solute_feats["atom"] = new_solute_feats
         solvent_feats["atom"] = new_solvent_feats
-
+        
         # readout layer - set2set
-        solute_feats = self.readout_layer(solute_graph, solute_feats) # 100 * hidden_dim
-        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) # 100 * hidden_dim
+        solute_feats_prime = self.readout_layer(solute_graph, solute_feats) 
+        solvent_feats_prime = self.readout_layer(solvent_graph, solvent_feats) 
 
         # concatenate
-        feats = torch.cat([solute_feats, solvent_feats], dim=1) # 200 * hidden_dim
+        feats = torch.cat([solute_feats_prime, solvent_feats_prime], dim=1) 
 
         # fc
         for layer in self.fc_layers:
@@ -178,17 +162,6 @@ class InteractionMap(AttentionGCN):
         fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"]) 
 
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
-            # Effect of the solvent on the solute (OLD)
-            # solute_fts_att_w  = torch.matmul(self.solute_W_a(solute_ft), solvent_ft.t()) 
-            # solute_fts_att_w = torch.nn.functional.softmax(solute_fts_att_w, dim=0)
-            
-            # solvent_fts_att_w  = torch.matmul(self.solvent_W_a(solvent_ft), solute_ft.t()) 
-            # solvent_fts_att_w = torch.nn.functional.softmax(solvent_fts_att_w, dim=0)
-
-            # solute_wts.append(solute_fts_att_w)
-            # solvent_wts.append(solvent_fts_att_w)
-
-            # NEW
             pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1)
             pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.1) 
             
@@ -203,46 +176,6 @@ class InteractionMap(AttentionGCN):
 
         return solute_wts, solvent_wts
 
-
-class NodeAttentionNetwork(AttentionGCN):
-    def forward(self, solute_graph, solvent_graph, solute_feats, solvent_feats,
-     solute_norm_atom=None, solute_norm_bond=None, solvent_norm_atom=None, solvent_norm_bond=None):
-        """
-        Args:
-            graph (DGLHeteroGraph or BatchedDGLHeteroGraph): (batched) molecule graphs
-            feats (dict): node features with node type as key and the corresponding features as value
-            norm_atom (2D tensor or None): graph norm for atom
-            norm_bond (2D tensor or None): graph norm for bond
-
-        Returns:
-            2D tensor: of shape(N, M), where M = outdim.
-        """
-        # embed the solute and solvent
-
-        solute_feats = self.solute_embedding(solute_feats)
-        solvent_feats = self.solvent_embedding(solvent_feats)
-
-        # pass the solute and solvent through separate g2g layers
-        for layer in self.gated_layers:
-            solute_feats = layer(solute_graph, solute_feats, solute_norm_atom, solute_norm_bond)
-            solvent_feats = layer(solvent_graph, solvent_feats, solvent_norm_atom, solvent_norm_bond)
-
-        # now update the solute and solvent features based on each other
-        # ...
-
-
-        # readout layer - set2set
-        solute_feats = self.readout_layer(solute_graph, solute_feats) # 100 * hidden_dim
-        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) # 100 * hidden_dim
-
-        # concatenate
-        feats = torch.cat([solute_feats, solvent_feats], dim=1) # 200 * hidden_dim
-
-        # fc
-        for layer in self.fc_layers:
-            feats = layer(feats)
-
-        return feats
 
 class GatedGCNSolvationNetwork(GatedGCNMol):
     def forward(self, solute_graph, solvent_graph, solute_feats, solvent_feats,
@@ -267,11 +200,11 @@ class GatedGCNSolvationNetwork(GatedGCNMol):
             solvent_feats = layer(solvent_graph, solvent_feats, solvent_norm_atom, solvent_norm_bond)
 
         # readout layer - set2set
-        solute_feats = self.readout_layer(solute_graph, solute_feats) # 100 * hidden_dim
-        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) # 100 * hidden_dim
+        solute_feats = self.readout_layer(solute_graph, solute_feats) 
+        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) 
 
         # concatenate
-        feats = torch.cat([solute_feats, solvent_feats], dim=1) # 200 * hidden_dim
+        feats = torch.cat([solute_feats, solvent_feats], dim=1) 
 
         # fc
         for layer in self.fc_layers:
