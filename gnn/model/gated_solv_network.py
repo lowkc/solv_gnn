@@ -89,7 +89,6 @@ class InteractionMap(AttentionGCN):
         Returns:
             2D tensor: of shape(N, M), where M = outdim.
         """
-        # embed the solute and solvent
 
         solute_feats = self.solute_embedding(solute_feats)
         solvent_feats = self.solvent_embedding(solvent_feats)
@@ -102,23 +101,21 @@ class InteractionMap(AttentionGCN):
        # interaction map - attention mechanism
        # adapted from https://github.com/tbwxmu/SAMPN/blob/7d8db6223e8f6f35f0953310da03fa842187fbcc/mpn.py
 
-        fts_solu = _split_batched_output_atoms(solute_graph, solute_feats["atom"]) # 22 * 64
-        fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"]) # 23 * 64
-
+        fts_solu = _split_batched_output_atoms(solute_graph, solute_feats["atom"]) 
+        fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"]) 
         updated_solute_atom_fts = []
         updated_solvent_atom_fts = []
 
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
-            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) # 14 * 64, 14 = natoms
-            pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.1) # 6 * 64 
+            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) 
+            pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.1) 
             pairwise_pred = torch.sigmoid(torch.matmul(
-                pairwise_solute_feature, pairwise_solvent_feature.t())) # 14 * 6
+                pairwise_solute_feature, pairwise_solvent_feature.t())) 
 
-            # Want to get new_solute_feats back to the shape 14 * 64
-            new_solvent_feats = torch.matmul(pairwise_pred.t(), pairwise_solute_feature) # 6*14, 14*64 = 6*64
-            new_solute_feats = torch.matmul(pairwise_pred, pairwise_solvent_feature) # 14*6, 6*64 = 14*64
+            new_solvent_feats = torch.matmul(pairwise_pred.t(), pairwise_solute_feature)
+            new_solute_feats = torch.matmul(pairwise_pred, pairwise_solvent_feature) 
 
-            # TEST: add the old solute_ft to the new one to get a represetnation of both inter- and intra-molecular interactions.
+            # Add the old solute_ft to the new one to get a representation of both inter- and intra-molecular interactions.
             new_solute_feats += solute_ft
             new_solvent_feats += solvent_ft
             updated_solute_atom_fts.append(new_solute_feats)
