@@ -168,23 +168,20 @@ def evaluate(model, nodes, data_loader, metric_fn, scaler = None, device=None, r
         return accuracy / count
 
 
-def objective(trial, dataset, random_seed):
-    gated_graph_norm = trial.suggest_int("gated_graph_norm", 0, 1)
-    embedding_size = trial.suggest_categorical("embedding_size", [24, 48, 64])
+def objective(trial, dataset, random_seed, save_dir):
+    embedding_size = trial.suggest_int("embedding_size", 24, 72, step=24)
     gated_batch_norm = trial.suggest_int("gated_batch_norm", 0, 1)
-    fc_batch_norm = trial.suggest_int("fc_batch_norm", 0, 1)
     gated_dropout = trial.suggest_discrete_uniform("gated_dropout", 0.0, 0.5, 0.1)
     fc_dropout = trial.suggest_discrete_uniform("fc_dropout", 0.0, 0.5, 0.1)
-    gated_hidden_size = trial.suggest_int('first_layer_neurons', 200, 1000, step=200)
-    fc_hidden_size = trial.suggest_int('first_layer_neurons', 800, 1400, step=200)
-    batch_size = trial.suggest_categorical("batch_size", [50, 100])
+    gated_hidden_size = trial.suggest_int("gated_hidden_size", 200, 800, step=200)
+    fc_hidden_size = trial.suggest_int("fc_hidden_size", 800, 1400, step=200)
+    batch_size = trial.suggest_int("batch_size", 50, 100, step=50)
     fc_num_layers = trial.suggest_int("fc_num_layers", 2, 4)
     gated_num_layers = trial.suggest_int("gated_num_layers", 2, 4)
-    gated_num_fc_layers = trial.suggest_int("gated_num_layers", 2, 4)
+    gated_num_fc_layers = trial.suggest_int("gated_num_fc_layers", 2, 4)
     num_lstm_layers = trial.suggest_int("num_lstm_layers", 2, 4)
     num_lstm_iters = trial.suggest_int("num_lstm_iters", 5, 8)
-    weight_decay = 10**trial.suggest_int('weight_decay', -10, -5)
-    lr = 10**trial.suggest_int('lr', -6, -4)
+    lr = 10**trial.suggest_int('lr', -4, -2)
 
     feature_names = ["atom", "bond", "global"]
     set2set_ntypes_direct = ["global"]
@@ -192,11 +189,10 @@ def objective(trial, dataset, random_seed):
     solvent_feature_size = dataset.feature_sizes[1]    
 
     gated_hidden_size = [gated_hidden_size] * gated_num_layers
-    print("Gated hidden size: ", gated_hidden_size)
     valx = 2 * gated_hidden_size[-1]
     fc_hidden_size = [max(valx // 2 ** i, 8) for i in range(fc_num_layers)]
-    print("FC hidden size: ", fc_hidden_size)
 
+    best = np.finfo(np.float32).max
     model = GatedGCNSolvationNetwork(
         solute_in_feats=solute_feature_size,
         solvent_in_feats=solvent_feature_size,
@@ -204,7 +200,7 @@ def objective(trial, dataset, random_seed):
         gated_num_layers=gated_num_layers,
         gated_hidden_size=gated_hidden_size,
         gated_num_fc_layers=gated_num_fc_layers,
-        gated_graph_norm=gated_graph_norm,
+        gated_graph_norm=0,
         gated_batch_norm=gated_batch_norm,
         gated_activation="LeakyReLU",
         gated_residual=1,
@@ -214,7 +210,7 @@ def objective(trial, dataset, random_seed):
         set2set_ntypes_direct=set2set_ntypes_direct,
         fc_num_layers=fc_num_layers,
         fc_hidden_size=fc_hidden_size,
-        fc_batch_norm=fc_batch_norm,
+        fc_batch_norm=0,
         fc_activation="LeakyReLU",
         fc_dropout=fc_dropout,
         outdim=1,
@@ -226,7 +222,7 @@ def objective(trial, dataset, random_seed):
         model.to(device)
 
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=lr, weight_decay=weight_decay
+        model.parameters(), lr=lr, weight_decay=0
     )
     loss_func = MSELoss(reduction="mean")
     metric = L1Loss(reduction="sum")
@@ -261,12 +257,12 @@ def objective(trial, dataset, random_seed):
     bs = max(len(valset) // 10, 1)
     val_loader = DataLoaderSolvation(valset, batch_size=bs, shuffle=False)
     bs = max(len(testset) // 10, 1)
-    test_loader = DataLoaderSolvation(testset, batch_size=bs, shuffle=False)
+    #test_loader = DataLoaderSolvation(testset, batch_size=bs, shuffle=False)
 
     print("\n\n# Epoch     Loss         TrainAcc        ValAcc     Time (s)")
     sys.stdout.flush()
 
-    for epoch in range(1000):
+    for epoch in range(500):
         ti = time.time()
         loss, train_acc = train(
                 optimizer, model, feature_names, train_loader, loss_func, metric, device)
@@ -277,10 +273,44 @@ def objective(trial, dataset, random_seed):
             sys.exit(1)
 
         val_acc = evaluate(model, feature_names, val_loader, metric, label_scaler, device)
+        scheduler.step(val_acc)
+        
+        is_best = val_acc < best
+        if is_best:
+            best = val_acc
+        
+        misc_objs = {"best": best, "epoch": epoch}
+        scaler_objs = {'label_scaler': {
+            'means': label_scaler.mean,
+            'stds': label_scaler.std
+            } if label_scaler is not None else None,
+            'solute_features_scaler': {
+            'means': solute_features_scaler.mean,
+            'stds': solute_features_scaler.std
+            } if solute_features_scaler is not None else None,
+            'solvent_features_scaler': {
+            'means': solvent_features_scaler.mean,
+            'stds': solvent_features_scaler.std
+            } if solvent_features_scaler is not None else None}
+        save_checkpoints(
+            state_dict_objs,
+            misc_objs,
+            scaler_objs,
+            is_best,
+            msg=f"epoch: {epoch}, score {val_acc}",
+            save_dir=save_dir)
+
+        tt = time.time() - ti
+        print("{:5d}   {:12.6e}   {:12.6e}   {:12.6e}   {:.2f}".format(
+            epoch, loss, train_acc, val_acc, tt) )
+        if epoch % 10 == 0:
+            sys.stdout.flush()
+
         trial.report(val_acc, epoch)
 
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
+        
     
     return val_acc
 
@@ -302,14 +332,17 @@ if __name__ == "__main__":
 
     print("\n\nStart training at: ", datetime.now())
 
+
     if args.save_dir is None:
-        args.save_dir = os.getcwd()
-    
+        save_dir = os.getcwd()
+    else:
+        save_dir = args.save_dir
+
     mols, labels = load_mols_labels(args.dataset_file)
 
     dataset = SolvationDataset(
-        solute_grapher = grapher(mol_volume=None),
-        solvent_grapher = grapher(mol_volume=None),
+        solute_grapher = grapher(mol_volume=False),
+        solvent_grapher = grapher(mol_volume=False),
         molecules = mols,
         labels = labels,
         solute_extra_features = None,
@@ -318,13 +351,11 @@ if __name__ == "__main__":
         label_transformer= False,
         state_dict_filename=None
     )
-    
-    best = np.finfo(np.float32).max
     os.makedirs(args.save_dir, exist_ok=True)
 
-    func = lambda trial: objective(trial, dataset, random_seed)
+    func = lambda trial: objective(trial, dataset, random_seed, save_dir)
     pruner = optuna.pruners.MedianPruner()
-    study = optuna.create_study(direction='minimize', study_name='HyperparamOpt')
+    study = optuna.create_study(direction='minimize', study_name='HyperparamOpt', pruner=pruner)
     study.optimize(func, n_trials=100)
 
     pruned_trials = study.get_trials(states=(optuna.trial.TrialState.PRUNED,))
