@@ -183,6 +183,7 @@ def train(optimizer, model, nodes, data_loader, loss_fn, metric_fn, device=None)
                      solvent_feats, solute_norm_atom, solute_norm_bond, 
                      solvent_norm_atom, solvent_norm_bond)
         pred = pred.view(-1)
+        target = target.view(-1)
 
         loss = loss_fn(pred, target)
         optimizer.zero_grad()
@@ -342,6 +343,7 @@ def main_worker(gpu, world_size, args):
     best = np.finfo(np.float32).max
     os.makedirs(args.save_dir, exist_ok=True)
     
+    # Split data: random, solvent-based split, element-based, or scaffold-based split
     if (args.solvent_split is None) and (args.element_split is None) and (args.scaffold_split is False):
         print(f'Splitting data using random seed {random_seed}')
         trainset, valset, testset = train_validation_test_split(
@@ -349,15 +351,18 @@ def main_worker(gpu, world_size, args):
     elif args.solvent_split is not None:
         possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
                'dichloromethane', 'acetonitrile', 'thf', 'dmso']
-        assert args.solvent_split in possible_solvents, "Solvent unavailable!"
+        assert args.solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
         print(f'Using compounds with {args.solvent_split} solvent as test data.')
         trainset, valset, testset = solvent_split(
             dataset, args.solvent_split, random_seed=args.random_seed)
     elif args.scaffold_split is True:
         trainset, valset, testset = substructure_split(
-            dataset, args.solvent_split, random_seed=args.random_seed)
-    else: # element split
+            dataset, random_seed=args.random_seed)
+    elif args.element_split is not None: # element split
+        possible_elems = ['Br', 'Cl', 'F', 'I', 'N', 'O', 'S']
         elem = args.element_split
+        assert elem in possible_elems, "Element unavailable! Choose from: 'Br', 'Cl', 'F', 'I', 'N', 'O', 'S'"
+        print(f'Placing all solutes with {elem} atoms into the test dataset.')
         trainset, valset, testset = element_split(dataset, elem, random_seed=args.random_seed)
 
     # Scale training dataset features

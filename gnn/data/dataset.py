@@ -1047,10 +1047,9 @@ def element_split(dataset, element, random_seed=None):
     Split the dataset such that solutes containing the chosen element is removed from the training and validation set, 
     and present in the test set only.
     """ 
-    train_idx, val_idx, test_idx = [], [], []
+    test_idx = []
     solutes = [m[0] for m in dataset.molecules]
     pattern = Chem.MolFromSmarts(element)
-
     
     for i, mol in enumerate(solutes):
         if mol.HasSubstructMatch(pattern):

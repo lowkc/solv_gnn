@@ -170,8 +170,11 @@ def evaluate(model, nodes, data_loader, metric_fn, scaler = None, device=None, r
 
 def objective(trial, dataset, random_seed, save_dir):
     embedding_size = trial.suggest_int("embedding_size", 24, 72, step=24)
+    gated_graph_norm = trial.suggest_int("gated_graph_norm", 0, 1)
+    gated_residual = trial.suggest_int("gated_residual", 0, 1)
     gated_batch_norm = trial.suggest_int("gated_batch_norm", 0, 1)
     gated_dropout = trial.suggest_discrete_uniform("gated_dropout", 0.0, 0.5, 0.1)
+    fc_batch_norm = trial.suggest_int("fc_batch_norm", 0, 1)
     fc_dropout = trial.suggest_discrete_uniform("fc_dropout", 0.0, 0.5, 0.1)
     gated_hidden_size = trial.suggest_int("gated_hidden_size", 200, 800, step=200)
     fc_hidden_size = trial.suggest_int("fc_hidden_size", 800, 1400, step=200)
@@ -200,17 +203,17 @@ def objective(trial, dataset, random_seed, save_dir):
         gated_num_layers=gated_num_layers,
         gated_hidden_size=gated_hidden_size,
         gated_num_fc_layers=gated_num_fc_layers,
-        gated_graph_norm=0,
+        gated_graph_norm=gated_graph_norm,
         gated_batch_norm=gated_batch_norm,
         gated_activation="LeakyReLU",
-        gated_residual=1,
+        gated_residual=gated_residual,
         gated_dropout=gated_dropout,
         num_lstm_iters=num_lstm_iters,
         num_lstm_layers=num_lstm_layers,
         set2set_ntypes_direct=set2set_ntypes_direct,
         fc_num_layers=fc_num_layers,
         fc_hidden_size=fc_hidden_size,
-        fc_batch_norm=0,
+        fc_batch_norm=fc_batch_norm,
         fc_activation="LeakyReLU",
         fc_dropout=fc_dropout,
         outdim=1,
@@ -262,7 +265,7 @@ def objective(trial, dataset, random_seed, save_dir):
     print("\n\n# Epoch     Loss         TrainAcc        ValAcc     Time (s)")
     sys.stdout.flush()
 
-    for epoch in range(500):
+    for epoch in range(300):
         ti = time.time()
         loss, train_acc = train(
                 optimizer, model, feature_names, train_loader, loss_func, metric, device)
