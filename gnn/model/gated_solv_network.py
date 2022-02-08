@@ -63,11 +63,11 @@ class SelfInteractionMap(AttentionGCN):
         solvent_feats["atom"] = new_solvent_feats
 
         # readout layer - set2set
-        solute_feats = self.readout_layer(solute_graph, solute_feats) # 100 * hidden_dim
-        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) # 100 * hidden_dim
+        solute_feats = self.readout_layer(solute_graph, solute_feats) 
+        solvent_feats = self.readout_layer(solvent_graph, solvent_feats) 
 
         # concatenate
-        feats = torch.cat([solute_feats, solvent_feats], dim=1) # 200 * hidden_dim
+        feats = torch.cat([solute_feats, solvent_feats], dim=1) 
 
         # fc
         for layer in self.fc_layers:
