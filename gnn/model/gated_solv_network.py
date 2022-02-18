@@ -30,25 +30,28 @@ class SelfInteractionMap(AttentionGCN):
             solute_feats = layer(solute_graph, solute_feats, solute_norm_atom, solute_norm_bond)
             solvent_feats = layer(solvent_graph, solvent_feats, solvent_norm_atom, solvent_norm_bond)
 
-        fts_solu = _split_batched_output_atoms(solute_graph, solute_feats["atom"]) # 22 * 64
-        fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"]) # 23 * 64
+        fts_solu = _split_batched_output_atoms(solute_graph, solute_feats["atom"]) 
+        fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"])
 
         updated_solute_atom_fts = []
         updated_solvent_atom_fts = []
 
+        for layer in self.intmap_layers:
+            continue
+
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
             # Effect of the solvent on the solute
-            solute_fts_att_w  = torch.matmul(self.solute_W_a(solute_ft), solute_ft.t()) 
+            solute_fts_att_w  = torch.matmul(self.intmap_layers[0](solute_ft), solute_ft.t()) 
             solute_fts_att_w = torch.nn.functional.softmax(solute_fts_att_w, dim=0)
             
-            solvent_fts_att_w  = torch.matmul(self.solvent_W_a(solvent_ft), solvent_ft.t()) 
+            solvent_fts_att_w  = torch.matmul(self.intmap_layers[2](solvent_ft), solvent_ft.t()) 
             solvent_fts_att_w = torch.nn.functional.softmax(solvent_fts_att_w, dim=0)
 
             solute_attn_hiddens = torch.matmul(solute_fts_att_w, solute_ft)
-            solute_attn_hiddens = self.W_activation(self.solute_W_b(solute_attn_hiddens))
+            solute_attn_hiddens = self.W_activation(self.intmap_layers[1](solute_attn_hiddens))
 
             solvent_attn_hiddens = torch.matmul(solvent_fts_att_w, solvent_ft) 
-            solvent_attn_hiddens = self.W_activation(self.solvent_W_b(solvent_attn_hiddens))
+            solvent_attn_hiddens = self.W_activation(self.intmap_layers[3](solvent_attn_hiddens))
 
             new_solute_feats = solute_ft + solute_attn_hiddens
             new_solvent_feats = solvent_ft + solvent_attn_hiddens
@@ -105,6 +108,7 @@ class InteractionMap(AttentionGCN):
         fts_solv = _split_batched_output_atoms(solvent_graph, solvent_feats["atom"]) 
         updated_solute_atom_fts = []
         updated_solvent_atom_fts = []
+
 
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
             pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) 

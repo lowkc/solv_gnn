@@ -1,7 +1,7 @@
 # Graph neural networks for solvation free energy prediction
 
 ## Installation
-Dependencies: ```pytorch==1.6.0```, ```dgl==0.5.0```, ```rdkit=2020.03.5```
+Dependencies: ```pytorch==1.6.0```, ```dgl==0.5.0```, ```rdkit=2020.03.5``` 
 
 ## Train the model
 Check out the notebook for examples.

@@ -268,20 +268,13 @@ class AttentionGCN(nn.Module):
             in_size = gated_hidden_size[i]
 
 
-        # Attention map layer
+        #Attention map layer
         self.solute_W_a = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1])
-        self.solute_W_b = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1]) 
+        #self.solute_W_b = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1]) 
         self.solvent_W_a = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1])
-        self.solvent_W_b = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1]) 
+        #self.solvent_W_b = nn.Linear(gated_hidden_size[-1], gated_hidden_size[-1]) 
         
         self.W_activation = fc_activation
-
-        self.intmap_layers = nn.ModuleList()
-        self.intmap_layers.append(self.solute_W_a)
-        self.intmap_layers.append(self.solute_W_b)
-        self.intmap_layers.append(self.solvent_W_a)
-        self.intmap_layers.append(self.solvent_W_b)
-
 
         # set2set readout layer
         ntypes = ["atom", "bond"]
@@ -348,10 +341,6 @@ class AttentionGCN(nn.Module):
 
         # gated layer
         for layer in self.gated_layers:
-            feats = layer(graph, feats, norm_atom, norm_bond)
-
-        # int map layer
-        for layer in self.intmap_layers:
             feats = layer(graph, feats, norm_atom, norm_bond)
 
         # readout layer

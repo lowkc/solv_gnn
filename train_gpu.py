@@ -239,6 +239,7 @@ def evaluate(model, nodes, data_loader, metric_fn, scaler = None, device=None, r
                      solvent_feats, solute_norm_atom, solute_norm_bond, 
                      solvent_norm_atom, solvent_norm_bond)
             pred = pred.view(-1)
+            target = target.view(-1)
 
             # Inverse scale 
             if scaler is not None:

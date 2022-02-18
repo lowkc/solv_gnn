@@ -1003,7 +1003,7 @@ def check_if_same_mol(mol1, mol2):
     return Chem.MolToInchi(mol1) == Chem.MolToInchi(mol2)
 
 def substructure_split(dataset, scaffolds = ['c1ccccc1C(=O)[O&H1]', 'C#[C&H1]', 'C[C&H2]Cl', 'C1=CCCC1', 'c1ccc2c(-,:c1)ccc1ccccc12',
-           'C1COCCN1', 'NS(=O)(=O)C', 'c1ccccc1[N&+](=O)[O&-]'], random_seed=None):
+           'C1COCCN1', 'NS(=O)(=O)C', 'c1ccccc1[N&+](=O)[O&-]', 'O[N+]([O-])=O'], random_seed=None):
     '''
     Split a dataset by scaffolds so that molecules with the supplied scaffold (SMARTS) are in the test set.
     Scaffold SMARTS and structures from: https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/61d33656d6dcc267874e59e0/original/group-contribution-and-machine-learning-approaches-to-predict-abraham-solute-parameters-solvation-free-energy-and-solvation-enthalpy.pdf
