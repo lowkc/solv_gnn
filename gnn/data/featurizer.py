@@ -348,31 +348,20 @@ class AtomFeaturizerFull(BaseFeaturizer):
             ft = [is_acceptor[u], is_donor[u]]
 
             atom = mol.GetAtomWithIdx(u)
-
-            # ft.append(atom.GetDegree())
             ft.append(atom.GetTotalDegree())
 
-            # ft.append(atom.GetExplicitValence())
-            # ft.append(atom.GetImplicitValence())
             ft.append(atom.GetTotalValence())
-
-            # ft.append(atom.GetFormalCharge())
-            # ft.append(atom.GetNumRadicalElectrons())
 
             ft.append(int(atom.GetIsAromatic()))
             ft.append(int(atom.IsInRing()))
 
-            # ft.append(atom.GetNumExplicitHs())
-            # ft.append(atom.GetNumImplicitHs())
             ft.append(atom.GetTotalNumHs(includeNeighbors=True))
 
-            # ft.append(atom.GetAtomicNum())
             ft += one_hot_encoding(atom.GetSymbol(), species)
 
             ft += one_hot_encoding(
                 atom.GetHybridization(),
                 [
-                    # Chem.rdchem.HybridizationType.S,
                     Chem.rdchem.HybridizationType.SP,
                     Chem.rdchem.HybridizationType.SP2,
                     Chem.rdchem.HybridizationType.SP3,
@@ -392,19 +381,11 @@ class AtomFeaturizerFull(BaseFeaturizer):
             [
                 "acceptor",
                 "donor",
-                # "degree",
                 "total degree",
-                # "explicit valence",
-                # "implicit valence",
                 "total valence",
-                # "formal charge",
-                #"num radical electrons",
                 "is aromatic",
                 "is in ring",
-                # "num explicit H",
-                # "num implicit H",
                 "num total H",
-                # "atomic number",
             ]
             + ["chemical symbol"] * len(species)
             + ["hybridization"] * 4
@@ -421,6 +402,31 @@ def atom_lone_pairs(atom):
     # subtract the charge to get the true number of lone pair electrons
     nlp -= atom.GetFormalCharge()
     return nlp
+
+def pauling_electronegativity(atom):
+    symbol = atom.GetSymbol()
+    if symbol == "H":
+        return 2.20
+    elif symbol == "C":
+        return 2.55
+    elif symbol == "O":
+        return 3.44
+    elif symbol == "N":
+        return 3.04
+    elif symbol == "B":
+        return 2.04
+    elif symbol == "S":
+        return 2.58
+    elif symbol == "P":
+        return 2.19
+    elif symbol == "F":
+        return 3.98
+    elif symbol == "Cl":
+        return 3.16
+    elif symbol == "Br":
+        return 2.96
+    elif symbol == "I":
+        return 2.66
 
 class SolventAtomFeaturizer(BaseFeaturizer):
     """
