@@ -1,0 +1,58 @@
+!!python/object:argparse.Namespace
+attention_map: cross
+batch_size: 50
+dataset_file: /scratch/sn29/klow12/solvE/solvationML/data/combined.csv
+dataset_state_dict_filename: dataset_state_dict.pkl
+dielectric_constants: /scratch/sn29/klow12/solvE/solvationML/data/combined_solvent_dielectric.csv
+dist_backend: nccl
+dist_url: tcp://localhost:13456
+distributed: 0
+element_split: null
+embedding_size: 48
+epochs: 1000
+fc_activation: LeakyReLU
+fc_batch_norm: 0
+fc_dropout: 0.5
+fc_hidden_size:
+- 1600
+- 800
+- 400
+- 200
+fc_num_layers: 4
+feature_scaling: true
+gated_activation: LeakyReLU
+gated_batch_norm: 0
+gated_dropout: 0.0
+gated_graph_norm: 0
+gated_hidden_size:
+- 800
+- 800
+- 800
+gated_num_fc_layers: 3
+gated_num_layers: 3
+gated_residual: 1
+gpu: 0
+lr: 0.0001
+molecular_refractivity: true
+molecular_volume: true
+num_gpu: null
+num_lstm_iters: 6
+num_lstm_layers: 3
+output_file: results.pkl
+random_seed: 38
+restore: 0
+save_dir: /scratch/sn29/klow12/solvE/gnn/jobs/plusDC/logdir/38
+scaffold_split: false
+set2set_ntypes_direct:
+- global
+solute_feature_size:
+  atom: 30
+  bond: 11
+  global: 5
+solvent_feature_size:
+  atom: 30
+  bond: 11
+  global: 6
+solvent_split: null
+start_epoch: 0
+weight_decay: 0.0
