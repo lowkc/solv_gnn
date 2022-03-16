@@ -946,8 +946,16 @@ def solvent_split(dataset, target_solvent, random_seed):
     """ 
     if target_solvent == "hexane":
         inchi = 'InChI=1S/C6H14/c1-3-5-6-4-2/h3-6H2,1-2H3'
+    elif target_solvent == "hexadecane":
+        inchi = 'InChI=1S/C16H34/c1-3-5-7-9-11-13-15-16-14-12-10-8-6-4-2/h3-16H2,1-2H3'
     elif target_solvent == "water":
         inchi = 'InChI=1S/H2O/h1H2'
+    elif target_solvent == "octanol":
+        inchi = 'InChI=1S/C8H18O/c1-2-3-4-5-6-7-8-9/h9H,2-8H2,1H3'
+    elif target_solvent == "hexadecane":
+        inchi = 'InChI=1S/C16H34/c1-3-5-7-9-11-13-15-16-14-12-10-8-6-4-2/h3-16H2,1-2H3'
+    elif target_solvent == "dmf":
+        inchi = 'InChI=1S/C7H16/c1-3-5-7-6-4-2/h3-7H2,1-2H3'
     elif target_solvent == "acetone":
         inchi = 'InChI=1S/C3H6O/c1-3(2)4/h1-2H3'
     elif target_solvent == "ethanol":
@@ -997,7 +1005,6 @@ def solvent_split(dataset, target_solvent, random_seed):
         Subset(dataset, val_idx),
         Subset(dataset, test_idx),
           ]
-
 
 def check_if_same_mol(mol1, mol2):
     return Chem.MolToInchi(mol1) == Chem.MolToInchi(mol2)

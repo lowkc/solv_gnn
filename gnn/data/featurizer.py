@@ -215,7 +215,6 @@ class BondAsNodeFeaturizerFull(BondFeaturizer):
                     Chem.rdchem.BondType.DOUBLE,
                     Chem.rdchem.BondType.TRIPLE,
                     Chem.rdchem.BondType.AROMATIC,
-                    # Chem.rdchem.BondType.IONIC,
                 ]
                 if self.dative:
                     allowed_bond_type.append(Chem.rdchem.BondType.DATIVE)
