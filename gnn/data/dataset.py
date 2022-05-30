@@ -881,7 +881,6 @@ class Subset(SolvationDataset):
         return len(self.indices)
 
 
-
 def load_mols_labels(file):
     df = pd.read_csv(file, skipinitialspace=True, usecols=['DeltaGsolv'], index_col=None)
     labels = np.asarray(df)

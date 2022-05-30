@@ -10,10 +10,14 @@ from collections import defaultdict
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import ChemicalFeatures
+from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem import AllChem
+from rdkit.Chem import rdEHTTools
 from rdkit import RDConfig
 from rdkit.Chem.rdchem import GetPeriodicTable
 from openbabel import pybel
+from xtb.libxtb import VERBOSITY_MUTED
+from xtb.interface import Calculator, Param
 
 class BaseFeaturizer:
     def __init__(self, dtype="float32"):
@@ -81,7 +85,6 @@ class BondFeaturizer(BaseFeaturizer):
             raise ValueError(
                 "Unsupported bond length featurizer: {}".format(length_featurizer)
             )
-
 
 class BondAsNodeFeaturizerMinimum(BondFeaturizer):
     """
@@ -329,6 +332,8 @@ class AtomFeaturizerFull(BaseFeaturizer):
         fdef_name = os.path.join(RDConfig.RDDataDir, "BaseFeatures.fdef")
         mol_featurizer = ChemicalFeatures.BuildFeatureFactory(fdef_name)
         mol_feats = mol_featurizer.GetFeaturesForMol(mol)
+        _,res = rdEHTTools.RunMol(mol)
+        huckel_charges = list(res.GetAtomicCharges())
 
         for i in range(len(mol_feats)):
             if mol_feats[i].GetFamily() == "Donor":
@@ -345,6 +350,7 @@ class AtomFeaturizerFull(BaseFeaturizer):
         num_atoms = mol.GetNumAtoms()
         for u in range(num_atoms):
             ft = [is_acceptor[u], is_donor[u]]
+            ft.append(huckel_charges[u])
 
             atom = mol.GetAtomWithIdx(u)
             ft.append(atom.GetTotalDegree())
@@ -380,6 +386,7 @@ class AtomFeaturizerFull(BaseFeaturizer):
             [
                 "acceptor",
                 "donor",
+                "huckel partial charge",
                 "total degree",
                 "total valence",
                 "is aromatic",
@@ -402,36 +409,14 @@ def atom_lone_pairs(atom):
     nlp -= atom.GetFormalCharge()
     return nlp
 
-def pauling_electronegativity(atom):
-    symbol = atom.GetSymbol()
-    if symbol == "H":
-        return 2.20
-    elif symbol == "C":
-        return 2.55
-    elif symbol == "O":
-        return 3.44
-    elif symbol == "N":
-        return 3.04
-    elif symbol == "B":
-        return 2.04
-    elif symbol == "S":
-        return 2.58
-    elif symbol == "P":
-        return 2.19
-    elif symbol == "F":
-        return 3.98
-    elif symbol == "Cl":
-        return 3.16
-    elif symbol == "Br":
-        return 2.96
-    elif symbol == "I":
-        return 2.66
-
 class SolventAtomFeaturizer(BaseFeaturizer):
     """
     Featurize atoms in a molecule.
     The atom indices will be preserved, i.e. feature i corresponds to atom i.
     """
+    def __init__(self, partial_charges=None, dtype="float32"):
+        super().__init__(dtype)
+        self.partial_charges = partial_charges
 
     def __call__(self, mol, **kwargs):
         """
@@ -463,6 +448,50 @@ class SolventAtomFeaturizer(BaseFeaturizer):
         hbond_acceptors = sum(mol.GetSubstructMatches(HAcceptorSmarts), ())
         hbond_donors = sum(mol.GetSubstructMatches(HDonorSmarts), ())
 
+        if self.partial_charges is not None:
+            # Get Huckel partial charges
+            if self.partial_charges != "crippen":
+                x = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+                if x == 0:
+                    AllChem.UFFOptimizeMolecule(mol)
+                elif x == -1:
+                    mol_smiles = Chem.MolToSmiles(mol)
+                    pybel_mol = pybel.readstring("smi", mol_smiles)
+                    pybel_mol.make3D(forcefield='uff', steps=100)
+                    pdb = pybel_mol.write("pdb")
+                    mol = Chem.MolFromPDBBlock(pdb)
+                    
+                if self.partial_charges == "huckel":
+                    _, res = rdEHTTools.RunMol(mol)
+                    pcharges = list(res.GetAtomicCharges())
+                    
+                elif self.partial_charges == "xtb": # uses xtb not mulliken
+                    if mol.GetNumAtoms() != 167:
+                        try:
+                            atoms = np.zeros(mol.GetNumAtoms())
+                            pos = np.zeros((mol.GetNumAtoms(), 3))
+                            for i, atom in enumerate(mol.GetAtoms()):
+                                positions = mol.GetConformer().GetAtomPosition(i)
+                                atoms[i] = atom.GetAtomicNum()
+                                pos[i] = (positions.x, positions.y, positions.z)
+                            calc = Calculator(Param.GFN1xTB, atoms, pos)
+                            calc.set_verbosity(VERBOSITY_MUTED)
+                            res = calc.singlepoint()
+                            pcharges = res.get_charges()
+                        except Exception as e:
+                            pcharges = np.zeros(mol.GetNumAtoms())
+                    else:
+                        _, res = rdEHTTools.RunMol(mol)
+                        pcharges = list(res.GetAtomicCharges())
+            
+            else: # Calculate the atomic polarisability using the Crippen scheme.
+                mrContribs = rdMolDescriptors._CalcCrippenContribs(mol) 
+                pcharges = np.array([y for x,y in mrContribs])
+            
+            pcharges = np.nan_to_num(pcharges, posinf=0, neginf=0) # Replace any NaN with 0
+            if (sum(pcharges) > 100) or (sum(pcharges< -100)):
+                pcharges = np.zeros(mol.GetNumAtoms())
+        
         num_atoms = mol.GetNumAtoms()
         for u in range(num_atoms):
             ft = []
@@ -470,12 +499,13 @@ class SolventAtomFeaturizer(BaseFeaturizer):
             atom = mol.GetAtomWithIdx(u)
 
             ft.append(atom.GetTotalDegree())
-            ft.append(atom.GetFormalCharge())
+            #ft.append(atom.GetFormalCharge())
+            ft.append(pcharges[u])
 
             ft.append(int(atom.GetIsAromatic()))
             ft.append(int(atom.IsInRing()))
 
-            ft.append(Chem.PeriodicTable.GetRvdw(Chem.GetPeriodicTable(), atom.GetAtomicNum())) # vdW radius
+            #ft.append(Chem.PeriodicTable.GetRvdw(Chem.GetPeriodicTable(), atom.GetAtomicNum())) # vdW radius
             ft.append(atom_lone_pairs(atom)) # Number of lone pairs
 
             ft.append(atom.GetTotalNumHs(includeNeighbors=True))
@@ -513,10 +543,11 @@ class SolventAtomFeaturizer(BaseFeaturizer):
         self._feature_name = (
             [
                 "total degree",
-                "formal charge",
+                #"formal charge",
+                "huckel partial charge",
                 "is aromatic",
                 "is in ring",
-                "van der Waals radius",
+                #"van der Waals radius",
                 "num lone pairs",
                 "num total H",
                 "H bond acceptor",
