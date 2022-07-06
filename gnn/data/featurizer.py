@@ -449,15 +449,16 @@ class SolventAtomFeaturizer(BaseFeaturizer):
         hbond_donors = sum(mol.GetSubstructMatches(HDonorSmarts), ())
 
         if self.partial_charges is not None:
-            # Get Huckel partial charges
+            # Get partial charges
             if self.partial_charges != "crippen":
                 x = AllChem.EmbedMolecule(mol, useRandomCoords=True)
                 if x == 0:
-                    AllChem.UFFOptimizeMolecule(mol)
+                    #AllChem.UFFOptimizeMolecule(mol)
+                    Chem.rdForceFieldHelpers.MMFFOptimizeMolecule(mol, mmffVariant='MMFF94', maxIters=1000)
                 elif x == -1:
                     mol_smiles = Chem.MolToSmiles(mol)
                     pybel_mol = pybel.readstring("smi", mol_smiles)
-                    pybel_mol.make3D(forcefield='uff', steps=100)
+                    pybel_mol.make3D(forcefield='mmff94', steps=1000)
                     pdb = pybel_mol.write("pdb")
                     mol = Chem.MolFromPDBBlock(pdb)
                     
