@@ -1,7 +1,6 @@
 """
 Featurise a molecule heterograph of atom, bond, and global nodes with RDKit.
 """
-
 from dgl.batch import _batch_feat_dicts
 import torch
 import os
@@ -453,7 +452,6 @@ class SolventAtomFeaturizer(BaseFeaturizer):
             if self.partial_charges != "crippen":
                 x = AllChem.EmbedMolecule(mol, useRandomCoords=True)
                 if x == 0:
-                    #AllChem.UFFOptimizeMolecule(mol)
                     Chem.rdForceFieldHelpers.MMFFOptimizeMolecule(mol, mmffVariant='MMFF94', maxIters=1000)
                 elif x == -1:
                     mol_smiles = Chem.MolToSmiles(mol)
@@ -466,8 +464,8 @@ class SolventAtomFeaturizer(BaseFeaturizer):
                     _, res = rdEHTTools.RunMol(mol)
                     pcharges = list(res.GetAtomicCharges())
                     
-                elif self.partial_charges == "xtb": # uses xtb not mulliken
-                    if mol.GetNumAtoms() != 167:
+                elif self.partial_charges == "xtb": # uses xtb GFN1 partial charges 
+                    if mol.GetNumAtoms() != 167: # this one molecule seems to kill the xtb-python program: use huckel charges instead
                         try:
                             atoms = np.zeros(mol.GetNumAtoms())
                             pos = np.zeros((mol.GetNumAtoms(), 3))
@@ -484,29 +482,6 @@ class SolventAtomFeaturizer(BaseFeaturizer):
                     else:
                         _, res = rdEHTTools.RunMol(mol)
                         pcharges = list(res.GetAtomicCharges())
-                
-                elif self.partial_charges == "xtb_crippen":
-                    if mol.GetNumAtoms() != 167:
-                        try:
-                            atoms = np.zeros(mol.GetNumAtoms())
-                            pos = np.zeros((mol.GetNumAtoms(), 3))
-                            for i, atom in enumerate(mol.GetAtoms()):
-                                positions = mol.GetConformer().GetAtomPosition(i)
-                                atoms[i] = atom.GetAtomicNum()
-                                pos[i] = (positions.x, positions.y, positions.z)
-                            calc = Calculator(Param.GFN1xTB, atoms, pos)
-                            calc.set_verbosity(VERBOSITY_MUTED)
-                            res = calc.singlepoint()
-                            pcharges = res.get_charges()
-                        except Exception as e:
-                            pcharges = np.zeros(mol.GetNumAtoms())
-                    else:
-                        _, res = rdEHTTools.RunMol(mol)
-                        pcharges = list(res.GetAtomicCharges())
-
-                    mrContribs = rdMolDescriptors._CalcCrippenContribs(mol) 
-                    crippen_vals = np.array([y for x,y in mrContribs])
-
             
             else: # Calculate the atomic polarisability using the Crippen scheme.
                 mrContribs = rdMolDescriptors._CalcCrippenContribs(mol) 
@@ -532,8 +507,7 @@ class SolventAtomFeaturizer(BaseFeaturizer):
             ft.append(int(atom.GetIsAromatic()))
             ft.append(int(atom.IsInRing()))
 
-            #ft.append(Chem.PeriodicTable.GetRvdw(Chem.GetPeriodicTable(), atom.GetAtomicNum())) # vdW radius
-            ft.append(atom_lone_pairs(atom)) # Number of lone pairs
+            ft.append(atom_lone_pairs(atom)) 
 
             ft.append(atom.GetTotalNumHs(includeNeighbors=True))
 
@@ -565,9 +539,6 @@ class SolventAtomFeaturizer(BaseFeaturizer):
 
             feats.append(ft)
 
-            if self.partial_charges == "xtb_crippen":
-                ft.append(crippen_vals[u])
-
         feats = torch.tensor(feats, dtype=getattr(torch, self.dtype))
         self._feature_size = feats.shape[1]
         self._feature_name = (
@@ -576,7 +547,6 @@ class SolventAtomFeaturizer(BaseFeaturizer):
                 "partial/formal charge",
                 "is aromatic",
                 "is in ring",
-                #"van der Waals radius",
                 "num lone pairs",
                 "num total H",
                 "H bond acceptor",
@@ -586,9 +556,6 @@ class SolventAtomFeaturizer(BaseFeaturizer):
             + ["hybridization"] * 4
             + ["ring size"] * 5
         )
-        if self.partial_charges == "xtb_crippen":
-            self._feature_name.append("atomic polarisability")
-
         return {"feat": feats}
 
 
