@@ -15,7 +15,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.serialization import save
 from gnn.model.metric import EarlyStopping
 from gnn.model.gated_solv_network import GatedGCNSolvationNetwork, InteractionMap, SelfInteractionMap
-from gnn.data.dataset import SolvationDataset, train_validation_test_split, solvent_split, element_split, substructure_split
+from gnn.data.dataset import SolvationDataset, train_validation_test_split, solvent_split, element_split, substructure_split, stratified_solvent_split, stratified_split
 from gnn.data.dataloader import DataLoaderSolvation
 from gnn.data.grapher import HeteroMoleculeGraph
 from gnn.data.featurizer import (
@@ -50,6 +50,8 @@ def parse_args():
     parser.add_argument('--random-seed', type=int, default=0)
     parser.add_argument('--feature-scaling', type=bool, default=True)
     parser.add_argument('--solvent-split', type=str, default=None)
+    parser.add_argument('--solvent-stratified-split', type=str, default=None)
+    parser.add_argument('--stratified-split', type=bool, default=False)
     parser.add_argument('--element-split', type=str, default=None)
     parser.add_argument('--scaffold-split', type=bool, default=False)
     parser.add_argument('--attention-map', type=str, default=None)
@@ -345,19 +347,29 @@ def main_worker(gpu, world_size, args):
     os.makedirs(args.save_dir, exist_ok=True)
 
     # Split data: random, solvent-based split, element-based, or scaffold-based split
-    if (args.solvent_split is None) and (args.element_split is None) and (args.scaffold_split is False):
+    if (args.solvent_split is None) and (args.element_split is None) and (args.solvent_stratified_split is None) and (args.stratified_split is False) and (args.scaffold_split is False):
         print(f'Splitting data using random seed {random_seed}')
         trainset, valset, testset = train_validation_test_split(
             dataset, validation=0.1, test=0.1, random_seed=args.random_seed)
     elif args.solvent_split is not None:
         possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
-               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane']
+               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane', 'cyclohexane']
         assert args.solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
         print(f'Using compounds with {args.solvent_split} solvent as test data.')
         trainset, valset, testset = solvent_split(
             dataset, args.solvent_split, random_seed=args.random_seed)
+    elif args.solvent_stratified_split is not None:
+        possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
+               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane', 'cyclohexane']
+        assert args.stratifed_solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
+        print(f'Using compounds with {args.solvent_split} solvent as test data.')
+        trainset, valset, testset = stratified_solvent_split(
+            dataset, args.solvent_split, frac=0.1, random_seed=args.random_seed)
     elif args.scaffold_split is True:
         trainset, valset, testset = substructure_split(
+            dataset, random_seed=args.random_seed)
+    elif args.stratified_split is True:
+        trainset, valset, testset = stratified_split(
             dataset, random_seed=args.random_seed)
     elif args.element_split is not None: # element split
         possible_elems = ['Br', 'Cl', 'F', 'I', 'N', 'O', 'S']
