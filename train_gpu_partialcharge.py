@@ -26,6 +26,7 @@ from gnn.data.featurizer import (
 from gnn.data.dataset import load_mols_labels
 from gnn.utils import (
     load_checkpoints,
+    pickle_load,
     save_checkpoints,
     seed_torch,
     pickle_dump,
@@ -39,6 +40,7 @@ def parse_args():
 
     # input files and global variables
     parser.add_argument('--dataset-file', type=str, default=None)
+    parser.add_argument('--dataset-pickle', type=str, default=None)
     parser.add_argument('--dielectric-constants', type=str, default=None)
     parser.add_argument('--molecular-refractivity', type=bool, default=False)
     parser.add_argument('--molecular-volume', type=bool, default=False)
@@ -51,6 +53,7 @@ def parse_args():
     parser.add_argument('--feature-scaling', type=bool, default=True)
     parser.add_argument('--solvent-split', type=str, default=None)
     parser.add_argument('--solvent-stratified-split', type=str, default=None)
+    parser.add_argument('--solvent-stratified-frac', type=float, default=0.1)
     parser.add_argument('--stratified-split', type=bool, default=False)
     parser.add_argument('--element-split', type=str, default=None)
     parser.add_argument('--scaffold-split', type=bool, default=False)
@@ -99,6 +102,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=0.0001, help="learning rate")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay")
     parser.add_argument("--restore", type=int, default=0, help="read checkpoints")
+    parser.add_argument("--load-dataset", type=int, default=0, help="read dataset")
     parser.add_argument(
         "--dataset-state-dict-filename", type=str, default="dataset_state_dict.pkl"
     )
@@ -309,36 +313,41 @@ def main_worker(gpu, world_size, args):
     # Load molecules and labels from file
     mols, labels = load_mols_labels(args.dataset_file)
 
-    if args.dielectric_constants is not None:
-        dc_file = Path(args.dielectric_constants)        
-        dataset = SolvationDataset(
-            solute_grapher = grapher(mol_volume = args.molecular_volume,
-                                    mol_refract = args.molecular_refractivity,
-                                    partial_charges=args.partial_charges),
-            solvent_grapher = grapher(dielectric_constant=True,
-                                     mol_volume = args.molecular_volume,
-                                     mol_refract = args.molecular_refractivity,
-                                     partial_charges=args.partial_charges),
-            molecules = mols,
-            labels = labels,
-            solute_extra_features = None,
-            solvent_extra_features=dc_file,
-            feature_transformer = False,
-            label_transformer= False,
-            state_dict_filename=dataset_state_dict_filename)
-
+    if args.load_dataset:
+        data_dict = args.dataset_pickle
+        dataset = pickle_load(data_dict)
+    
     else:
-        dataset = SolvationDataset(
-            solute_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity, partial_charges=args.partial_charges),
-            solvent_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity, partial_charges=args.partial_charges),
-            molecules = mols,
-            labels = labels,
-            solute_extra_features = None,
-            solvent_extra_features = None,
-            feature_transformer = False,
-            label_transformer= False,
-            state_dict_filename=dataset_state_dict_filename
-            )
+        if args.dielectric_constants is not None:
+            dc_file = Path(args.dielectric_constants)        
+            dataset = SolvationDataset(
+                solute_grapher = grapher(mol_volume = args.molecular_volume,
+                                        mol_refract = args.molecular_refractivity,
+                                        partial_charges=args.partial_charges),
+                solvent_grapher = grapher(dielectric_constant=True,
+                                        mol_volume = args.molecular_volume,
+                                        mol_refract = args.molecular_refractivity,
+                                        partial_charges=args.partial_charges),
+                molecules = mols,
+                labels = labels,
+                solute_extra_features = None,
+                solvent_extra_features=dc_file,
+                feature_transformer = False,
+                label_transformer= False,
+                state_dict_filename=dataset_state_dict_filename)
+
+        else:
+            dataset = SolvationDataset(
+                solute_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity, partial_charges=args.partial_charges),
+                solvent_grapher = grapher(mol_volume=args.molecular_volume, mol_refract = args.molecular_refractivity, partial_charges=args.partial_charges),
+                molecules = mols,
+                labels = labels,
+                solute_extra_features = None,
+                solvent_extra_features = None,
+                feature_transformer = False,
+                label_transformer= False,
+                state_dict_filename=dataset_state_dict_filename
+                )
 
     # Save the solute and solvent graphers for loading datasets later
     pickle_dump([dataset.solute_grapher, dataset.solvent_grapher], os.path.join(args.save_dir,"graphers.pkl"))
@@ -347,30 +356,34 @@ def main_worker(gpu, world_size, args):
     os.makedirs(args.save_dir, exist_ok=True)
 
     # Split data: random, solvent-based split, element-based, or scaffold-based split
+
+    possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
+               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane', 'cyclohexane']
+
     if (args.solvent_split is None) and (args.element_split is None) and (args.solvent_stratified_split is None) and (args.stratified_split is False) and (args.scaffold_split is False):
         print(f'Splitting data using random seed {random_seed}')
         trainset, valset, testset = train_validation_test_split(
             dataset, validation=0.1, test=0.1, random_seed=args.random_seed)
+    
     elif args.solvent_split is not None:
-        possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
-               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane', 'cyclohexane']
-        assert args.solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
+        assert args.solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, cyclohexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
         print(f'Using compounds with {args.solvent_split} solvent as test data.')
         trainset, valset, testset = solvent_split(
             dataset, args.solvent_split, random_seed=args.random_seed)
     elif args.solvent_stratified_split is not None:
-        possible_solvents = ['hexane', 'water', 'acetone', 'ethanol', 'benzene', 'ethylacetate',
-               'dichloromethane', 'acetonitrile', 'thf', 'dmso', 'dmf', 'octanol', 'hexadecane', 'cyclohexane']
-        assert args.stratifed_solvent_split in possible_solvents, "Solvent unavailable! Choose from: hexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
-        print(f'Using compounds with {args.solvent_split} solvent as test data.')
+        assert args.solvent_stratified_split in possible_solvents, "Solvent unavailable! Choose from: hexane, cyclohexane, water, acetone, ethanol, benzene, ethylacetate, dichloromethane, acetonitrile, thf, dmso"
+        print(f'Using {1-args.solvent_stratified_frac}% of {args.solvent_stratified_split} solvent as test data.')
         trainset, valset, testset = stratified_solvent_split(
-            dataset, args.solvent_split, frac=0.1, random_seed=args.random_seed)
+            dataset, args.solvent_stratified_split, frac=args.solvent_stratified_frac, random_seed=args.random_seed)
+    
     elif args.scaffold_split is True:
         trainset, valset, testset = substructure_split(
             dataset, random_seed=args.random_seed)
+    
     elif args.stratified_split is True:
         trainset, valset, testset = stratified_split(
             dataset, random_seed=args.random_seed)
+    
     elif args.element_split is not None: # element split
         possible_elems = ['Br', 'Cl', 'F', 'I', 'N', 'O', 'S']
         elem = args.element_split

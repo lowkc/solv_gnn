@@ -969,7 +969,7 @@ def stratified_split(dataset, validation=0.1, test=0.1, random_seed=0):
     
     # Append remaining examples to train
     if sortidx.shape[0] > 0:
-        np.hstack([train_idx, sortidx])
+        train_idx = np.hstack([train_idx, sortidx])
 
     return [
         Subset(dataset, list(train_idx)),
@@ -1027,17 +1027,16 @@ def stratified_solvent_split(dataset, target_solvent, frac=0.1, random_seed=0):
     test_idx = np.setdiff1d(np.arange(size), total)
     num_test_new = test_idx.shape[0]
 
-    logger.info(f"Moving {num_test_new - num_test_old} data points from test to training and val datasets.")
+    logger.info(f"Moving {num_test_old - num_test_new} data points from test set to training and val datasets.")
 
     if sortidx.shape[0] > 0:
-      np.hstack([train_idx, sortidx])
+      train_idx = np.hstack([train_idx, sortidx])
     
     return [
         Subset(dataset, list(train_idx)),
         Subset(dataset, list(val_idx)),
         Subset(dataset, list(test_idx)),
           ]
-
 
 
 def solvent_inchi(target_solvent):
