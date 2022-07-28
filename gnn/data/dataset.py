@@ -881,7 +881,6 @@ class Subset(SolvationDataset):
         return len(self.indices)
 
 
-
 def load_mols_labels(file):
     df = pd.read_csv(file, skipinitialspace=True, usecols=['DeltaGsolv'], index_col=None)
     labels = np.asarray(df)
@@ -939,11 +938,108 @@ def train_validation_test_split(dataset, validation=0.1, test=0.1, random_seed=0
         Subset(dataset, test_idx),
           ]
 
-def solvent_split(dataset, target_solvent, random_seed):
-    """
-    Split the dataset such that the named solvent is removed from the training and validation set, 
-    and present in the test set only.
-    """ 
+def stratified_split(dataset, validation=0.1, test=0.1, random_seed=0):
+    '''
+    Splits compounds into train/validation/test using stratified sampling.
+    Base on the deepchem splitter: https://github.com/deepchem/deepchem/blob/master/deepchem/splits/splitters.py
+    '''
+    assert validation + test < 1.0, "validation + test >= 1"
+    frac_train = 1 - (validation + test)
+
+    y_vals = [i['value'].item() for i in dataset.labels]     # Order dataset by y-values
+    sortidx = np.argsort(y_vals)
+
+    train_idx = np.array([], dtype=int)
+    val_idx = np.array([], dtype=int)
+    test_idx = np.array([], dtype=int)
+
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    split_cd = 10
+    train_cutoff = int(np.round(frac_train * split_cd))
+    valid_cutoff = int(np.round(validation * split_cd)) + train_cutoff
+
+    while sortidx.shape[0] >= split_cd: # break up into groups of 10
+        sortidx_split, sortidx = np.split(sortidx, [split_cd])
+        shuffled = np.random.permutation(range(split_cd))
+        train_idx = np.hstack([train_idx, sortidx_split[shuffled[:train_cutoff]]])
+        val_idx = np.hstack([val_idx, sortidx_split[shuffled[train_cutoff:valid_cutoff]]])
+        test_idx = np.hstack([test_idx, sortidx_split[shuffled[valid_cutoff:]]])
+    
+    # Append remaining examples to train
+    if sortidx.shape[0] > 0:
+        train_idx = np.hstack([train_idx, sortidx])
+
+    return [
+        Subset(dataset, list(train_idx)),
+        Subset(dataset, list(val_idx)),
+        Subset(dataset, list(test_idx)),
+          ]
+
+
+def stratified_solvent_split(dataset, target_solvent, frac=0.1, random_seed=0):
+    '''
+    Removes chosen solvent from the train and validation set, and adds (frac) percent back to the test and validation sets based on stratified sampling.
+    '''
+    inchi = solvent_inchi(target_solvent)
+    size = len(dataset)
+    
+    test_y = []
+    train_idx = np.array([], dtype=int)
+    test_idx = []
+    val_idx = np.array([], dtype=int)
+    
+    for i, mol in enumerate(dataset.molecules):
+        solvent = mol[1]
+        if check_if_same_mol(Chem.MolFromInchi(inchi), solvent):
+            test_idx.append(i)
+            test_y.append(dataset.labels[i]['value'].item())
+
+    num_test_old = len(test_idx)
+    test_idx = np.array(test_idx)
+    test_y = np.array(test_y)
+    num_train_val = size - len(test_idx)
+    num_train = int(num_train_val * 0.9)
+
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    remaining_ind = np.setdiff1d(np.arange(size), test_idx)
+    np.random.shuffle(remaining_ind)
+    train_idx = remaining_ind[:num_train]
+    val_idx  = remaining_ind[num_train:]
+    
+    split_cd = 10
+    train_cutoff = int(np.round(frac*split_cd))
+    valid_cutoff = int(np.round(frac*split_cd)) + train_cutoff
+    sortidx = np.argsort(test_y) # arranges based on the test_y list, take the vals from test_idx
+    sortidx = test_idx[sortidx]
+
+    while sortidx.shape[0] >= split_cd:
+        sortidx_split, sortidx = np.split(sortidx, [split_cd])
+        shuffled = np.random.permutation(range(split_cd))
+        train_idx = np.hstack([train_idx, sortidx_split[shuffled[:train_cutoff]]])
+        val_idx = np.hstack(
+          [val_idx, sortidx_split[shuffled[train_cutoff:valid_cutoff]]])
+    
+    total = np.hstack([train_idx, val_idx])
+    test_idx = np.setdiff1d(np.arange(size), total)
+    num_test_new = test_idx.shape[0]
+
+    logger.info(f"Moving {num_test_old - num_test_new} data points from test set to training and val datasets.")
+
+    if sortidx.shape[0] > 0:
+      train_idx = np.hstack([train_idx, sortidx])
+    
+    return [
+        Subset(dataset, list(train_idx)),
+        Subset(dataset, list(val_idx)),
+        Subset(dataset, list(test_idx)),
+          ]
+
+
+def solvent_inchi(target_solvent):
     if target_solvent == "hexane":
         inchi = 'InChI=1S/C6H14/c1-3-5-6-4-2/h3-6H2,1-2H3'
     elif target_solvent == "hexadecane":
@@ -974,7 +1070,15 @@ def solvent_split(dataset, target_solvent, random_seed):
         inchi = 'InChI=1S/C2H6OS/c1-4(2)3/h1-2H3'
     else:
         raise ValueError("Solvent not found!")
+    return inchi
 
+
+def solvent_split(dataset, target_solvent, random_seed=0):
+    """
+    Split the dataset such that the named solvent is removed from the training and validation set, 
+    and present in the test set only.
+    """ 
+    inchi = solvent_inchi(target_solvent)
     test_idx = []
     
     for i, mol in enumerate(dataset.molecules):
@@ -989,14 +1093,14 @@ def solvent_split(dataset, target_solvent, random_seed):
     num_val = size - num_train - num_test
     assert num_val + num_test + num_train == size, "validation + train + test > 1"
 
-    np.random.seed(random_seed)
+    if random_seed is not None:
+        np.random.seed(random_seed)
     remaining_ind = np.setdiff1d(np.arange(size), test_idx)
     np.random.shuffle(remaining_ind)
     train_idx = remaining_ind[:num_train]
     val_idx  = remaining_ind[num_train:]
 
     # Validation set will be 10% of the training set
-    
     logger.info("Excluding {} from training/val dataset: {} test compounds".format(target_solvent, num_test))
     logger.info("Training set: {} compounds. Validation set: {} compounds".format(num_train, num_val))
 

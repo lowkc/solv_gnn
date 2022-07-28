@@ -111,8 +111,8 @@ class InteractionMap(AttentionGCN):
 
 
         for solute_ft, solvent_ft in zip(fts_solu, fts_solv):
-            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.1) 
-            pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.1) 
+            pairwise_solute_feature = F.leaky_relu(self.solute_W_a(solute_ft), 0.01) 
+            pairwise_solvent_feature = F.leaky_relu(self.solvent_W_a(solvent_ft), 0.01) 
             pairwise_pred = torch.sigmoid(torch.matmul(
                 pairwise_solute_feature, pairwise_solvent_feature.t())) 
 
